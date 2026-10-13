@@ -21,6 +21,10 @@ module board_specific_top
     // The buttons are active-low; lab_top expects active-high keys/switches.
     wire [W_KEY - 1:0] lab_key = ~ key;
 
+    // The LEDs are active-low; lab_top drives active-high, so invert.
+    wire [W_LED - 1:0] lab_led;
+    assign led = ~ lab_led;
+
     // Reset only on power-up. The AX7Z020B has no dedicated reset input and no
     // switches, so all four buttons stay available as lab inputs.
     wire rst_on_power_up;
@@ -78,7 +82,7 @@ module board_specific_top
         .key      (lab_key),
         .sw       (lab_key),
 
-        .led      (led),
+        .led      (lab_led),
 
         .abcdefgh (abcdefgh),
         .digit    (digit),
