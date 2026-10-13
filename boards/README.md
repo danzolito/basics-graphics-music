@@ -1,6 +1,6 @@
 # FPGA boards in basics-graphics-music
 
-54 boards, one line each. The Quartus ranges are **measured**: each installed version was asked whether it can build the board's exact part. A range marked with a dagger reaches past the versions available here, so its boundary is not measured.
+55 boards, one line each. The Quartus ranges are **measured**: each installed version was asked whether it can build the board's exact part. A range marked with a dagger reaches past the versions available here, so its boundary is not measured.
 
 Versions probed: 13.0sp1, 13.1 and 25.1std under the home directory, 21.1 under /opt, and 26.1.1 Pro. The repository states no version requirement for Vivado, Gowin EDA or the Yosys flow, so those entries are the author's knowledge.
 
@@ -48,6 +48,7 @@ Versions probed: 13.0sp1, 13.1 and 25.1std under the home directory, 21.1 under 
 | Lattice | Greg Davill | orangecrab | ECP5 | Yosys/OSS † | always | none |
 | Lattice | Olimex | ice40hx8k_evb | iCE40 | Yosys/OSS † | always | VGA |
 | Xilinx | ALINX | alinx_ax7035b | Artix-7 | Vivado, any version † | never | none |
+| Xilinx | ALINX | alinx_ax7z020b | Zynq-7000 | Vivado, any version † | never | none |
 | Xilinx | Digilent | arty_a7_100 | Artix-7 | Vivado, any version † | never | none |
 | Xilinx | Digilent | arty_a7_35 | Artix-7 | Vivado, any version † | never | none |
 | Xilinx | Digilent | basys3 | Artix-7 | Vivado, any version † | never | VGA |
@@ -74,4 +75,4 @@ Versions probed: 13.0sp1, 13.1 and 25.1std under the home directory, 21.1 under 
 * **MAX 10** — 21.1 and 25.1std build it, 13.x do not; the 14.0.2 bound is not measured here
 * **MAX II** — all four free editions build it
 
-Ranges fully measured for 23 of 54 boards.
+Ranges fully measured for 23 of 55 boards.
