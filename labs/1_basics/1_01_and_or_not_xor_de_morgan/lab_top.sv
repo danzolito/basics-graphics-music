@@ -75,9 +75,9 @@ module lab_top
 
     wire result = a ^ b;
 
-    assign led [0] = result;
+    // assign led [0] = result;
 
-    assign led [1] = key [0] ^ key [1];
+    // assign led [1] = key [0] ^ key [1];
     // assign led [2] = a ^ b;
 
     //------------------------------------------------------------------------
@@ -103,18 +103,23 @@ module lab_top
     // If led [2] is not available on your board,
     // comment out the code above and reuse led [0].
 
-    // assign led [2] =
+    // assign led [2] = a & b;
 
     // Exercise 2: Change the code below.
     // Assign to led [3] the result of XOR operation
     // without using "^" operation.
     // Use only operations "&", "|", "~" and parenthesis, "(" and ")".
 
-    // assign led [3] =
+    // assign led [3] = ~a & b | a & ~b;
 
     // Exercise 3: Create an illustration to De Morgan's laws:
     //
     // ~ (a & b) == ~ a | ~ b
     // ~ (a | b) == ~ a & ~ b
+
+    assign led [0] =  ~(a & b);
+    assign led [1] =  ~a | ~b;
+    assign led [2] = ~(a | b);
+    assign led [3] =  ~a & ~b;
 
 endmodule
