@@ -2,16 +2,22 @@
 
 // Interactive Mandelbrot set.
 //
-// The complex plane is shown on the screen. The image is computed in real time
-// by a sequential escape-time engine: one point per 4x4 pixel block. The colors
-// of the row the display is about to enter are computed in advance and kept in
-// a double-buffered line buffer, so the picture has no per-block artifacts.
+// The complex plane is shown on the screen. The image is computed by a
+// sequential escape-time engine and kept in a persistent framebuffer: the
+// display always reads the framebuffer at the full frame rate, while the
+// engine updates the blocks one by one as the computation progresses.
 //
-// The board runs the lab on a 62.5 MHz clock, 1.25 times faster than the
-// 50 MHz pixel clock of the 1024x600 video mode, which leaves the
-// escape-time engine enough cycles per block row. The display read is
-// pipelined with one register: the large line buffer mux fits into one lab
-// period, and the picture is simply shifted by one pixel.
+// The block size only trades the picture resolution against the refresh
+// time of the image: with MAX_ITER = 24, BLOCK_SIZE = 4 refreshes the whole
+// picture in about 17 ms and BLOCK_SIZE = 1 in about 320 ms. The display
+// itself never breaks and the frame rate never changes - during a recompute
+// the previous image is shown and is progressively replaced from the top.
+// Every key press restarts the computation with the new view.
+//
+// The board runs the lab on the 50 MHz pixel clock of the 1024x600 video
+// mode, so the lab and the display share one clock domain and every path
+// from the pixel coordinates to the RGB output has a full 20 ns pixel
+// period.
 //
 // The view keeps square cells of the complex plane, so the picture is not
 // distorted on any screen: the initial view spans [-2.5, 1.5] horizontally,
@@ -19,7 +25,7 @@
 //
 // The coordinates are fixed point Q4.24 (28 bits). The 28x28 multipliers fit
 // into two cascaded DSPs instead of four, and the zoom update is split into
-// two stages, so every combinational path meets the 62.5 MHz lab period with
+// two stages, so every combinational path meets the 50 MHz period with
 // margin.
 //
 // Controls (direct order: the driver maps S1 -> key[0], S2 -> key[1], ...):
@@ -59,7 +65,14 @@ module lab_top
                // Debounce depth of the keys, in bits (2^depth clock cycles).
                // The testbench shortens it to speed up the simulation.
 
-               debounce_depth = 19
+               debounce_depth = 19,
+
+               // One Mandelbrot point per BLOCK_SIZE x BLOCK_SIZE pixel
+               // block. Smaller blocks give a finer picture and
+               // proportionally longer image refresh time; the display rate
+               // never changes.
+
+               BLOCK_SIZE     = 1
 )
 (
     input                        clk,
@@ -115,9 +128,12 @@ module lab_top
 
     // One Mandelbrot point is computed per BLOCK_SIZE x BLOCK_SIZE pixel block.
 
-    localparam int BLOCK_SIZE = 4;
+    localparam int BLOCK_LOG2 = $clog2 (BLOCK_SIZE);
     localparam int N_BX = screen_width  / BLOCK_SIZE;   // block columns
     localparam int N_BY = screen_height / BLOCK_SIZE;   // block rows
+    localparam int W_BX = w_x - BLOCK_LOG2;             // block column bits
+    localparam int W_BY = w_y - BLOCK_LOG2;             // block row bits
+    localparam int ADDR_W = $clog2 (N_BX * N_BY);       // framebuffer address bits
 
     // Initial view of the complex plane, matching the MATLAB reference:
     // x in [-2.5, 1.5] with square cells, so the height follows the screen
@@ -128,12 +144,11 @@ module lab_top
     localparam logic signed [27:0] INIT_TOP  = (64'sd33554432 * N_BY) / N_BX;  // 2.0 * N_BY / N_BX
 
     // The iteration limit is fixed: zooming changes only the view, not the
-    // rendering accuracy. The value fits the row budget of the engine: with
-    // one point per 4x4 pixel block, a whole block row must be computed
-    // within four display lines. At 1024x600 with a 62.5 MHz lab clock the
-    // budget allows at most 24 iterations; 20 keeps a safe margin.
+    // rendering accuracy. The framebuffer removes the real-time budget of
+    // the old line-buffer design, so the value only makes the image refresh
+    // proportionally slower.
 
-    localparam logic [5:0] MAX_ITER = 6'd20;
+    localparam logic [5:0] MAX_ITER = 6'd24;
 
     // Zoom factors, as in the MATLAB reference: 0.7 and 1 / 0.7.
 
@@ -364,15 +379,55 @@ module lab_top
     assign digit    = seg_digit;
 
     //------------------------------------------------------------------------
-    // Escape-time engine: one point per BLOCK_SIZE x BLOCK_SIZE pixel block
+    // Framebuffer: the persistent image, updated by the engine as the
+    // computation progresses and always displayed at the full frame rate
     //------------------------------------------------------------------------
 
-    wire [w_x - 3:0] bx = x [w_x - 1:2];   // block column, 0 .. N_BX - 1
-    wire [w_y - 3:0] by = y [w_y - 1:2];   // block row,    0 .. N_BY - 1
+    // The color of every block is kept in a two-plane BRAM framebuffer: four
+    // bits in the main plane and one bit in the side plane, which stores a
+    // 5-bit value at the minimum BRAM cost. The display reads it through one
+    // port; the engine writes it through the other.
 
-    // The row the engine is computing: the one the display enters next.
+    logic [3:0] fb_lo [0:N_BX * N_BY - 1];
+    logic       fb_hi [0:N_BX * N_BY - 1];
 
-    wire [w_y - 3:0] next_row = (by == N_BY - 1) ? '0 : by + 1'b1;
+    wire [W_BX - 1:0] dbx = x [w_x - 1:BLOCK_LOG2];   // displayed block column
+    wire [W_BY - 1:0] dby = y [w_y - 1:BLOCK_LOG2];   // displayed block row
+
+    // The display address is registered together with the BRAM output, so
+    // the read takes two cycles and the picture is shifted by two pixels.
+
+    logic [ADDR_W - 1:0] fb_rd_addr;
+
+    always_ff @ (posedge clk)
+    begin
+        if (rst)
+            fb_rd_addr <= '0;
+        else
+            fb_rd_addr <= dby * N_BX + dbx;
+    end
+
+    logic [4:0] color_idx;
+
+    always_ff @ (posedge clk)
+    begin
+        if (rst)
+            color_idx <= '0;
+        else
+            color_idx <= { fb_hi [fb_rd_addr], fb_lo [fb_rd_addr] };
+    end
+
+    //------------------------------------------------------------------------
+    // Escape-time engine: one point per block, scanning the whole image
+    //------------------------------------------------------------------------
+    //
+    // A single sequential engine scans the blocks row by row and writes each
+    // result into the framebuffer. The scan runs continuously at its own
+    // pace: with BLOCK_SIZE = 1 and MAX_ITER = 24 the whole image takes
+    //   N_BX * N_BY * (MAX_ITER + 2) = 614400 * 26 = 16 million cycles,
+    // about 320 ms, so the picture refreshes at about 3 Hz while the display
+    // keeps showing the previous content at 60 Hz. Every key press restarts
+    // the scan from the top with the new view.
 
     typedef enum logic [1:0]
     {
@@ -384,21 +439,31 @@ module lab_top
 
     state_t state;
 
-    logic [7:0] by_r;
-    logic       disp_sel;
-
-    wire row_change = (by != by_r);
-
-    // One line buffer per row, double buffered: the display reads one while
-    // the engine fills the other.
-
-    logic [4:0] line_buf [2][N_BX];
+    logic [W_BY - 1:0] scan_by;
+    logic [W_BX - 1:0] scan_bx;
 
     logic signed [27:0] eng_cx, eng_cy;   // coordinates of the current point
     logic signed [27:0] zx, zy;           // current iteration value z = zx + i*zy
     logic        [ 5:0] iter;             // current iteration number
     logic        [ 4:0] color;            // escape time of the current point
-    logic        [ 7:0] bx_idx;           // block column being computed
+
+    // A key press requests the scan to restart from the top with the new
+    // view. The flag latches the pulse, so a press during the iterations of
+    // a point is not lost.
+
+    wire any_press = | key_press;
+
+    logic scan_restart;
+
+    always_ff @ (posedge clk)
+    begin
+        if (rst)
+            scan_restart <= 1'b1;
+        else if (any_press)
+            scan_restart <= 1'b1;
+        else if (state == S_IDLE)
+            scan_restart <= 1'b0;
+    end
 
     // Iteration arithmetic: z_next = z^2 + c
 
@@ -428,48 +493,43 @@ module lab_top
     wire signed [27:0] zx_next = zx2 - zy2 + eng_cx;
     wire signed [27:0] zy_next = (zxzy <<< 1) + eng_cy;
 
-    wire signed [27:0] row_offset;
-    assign row_offset = $signed ({1'b0, next_row}) * step;
-
     always_ff @ (posedge clk)
     begin
         if (rst)
         begin
             state    <= S_IDLE;
-            by_r     <= '0;
-            disp_sel <= 1'b0;
+            scan_by  <= '0;
+            scan_bx  <= '0;
             eng_cx   <= '0;
             eng_cy   <= '0;
             zx       <= '0;
             zy       <= '0;
             iter     <= '0;
             color    <= '0;
-            bx_idx   <= '0;
         end
         else
         begin
-            by_r <= by;
-
             case (state)
 
             S_IDLE:
             begin
-                if (row_change)
-                begin
-                    disp_sel <= ~ disp_sel;
-                    eng_cx   <= view_left;
-                    eng_cy   <= view_top - row_offset;
-                    bx_idx   <= '0;
-                    zx       <= '0;
-                    zy       <= '0;
-                    iter     <= '0;
-                    state    <= S_ITERATE;
-                end
+                // (Re)start the scan from the top with the current view.
+
+                scan_by <= '0;
+                scan_bx <= '0;
+                eng_cx  <= view_left;
+                eng_cy  <= view_top;
+                zx      <= '0;
+                zy      <= '0;
+                iter    <= '0;
+                state   <= S_ITERATE;
             end
 
             S_ITERATE:
             begin
-                if (iter == MAX_ITER)
+                if (scan_restart)
+                    state <= S_IDLE;
+                else if (iter == MAX_ITER)
                 begin
                     // The point never escaped: it belongs to the set.
 
@@ -493,21 +553,42 @@ module lab_top
 
             S_STORE:
             begin
-                // Store the color of this point into the line buffer that is
-                // not being displayed, and start the next point of the row.
+                // Write the color of this point into the framebuffer and
+                // advance the scan to the next point.
 
-                line_buf [~ disp_sel] [bx_idx] <= color;
+                fb_lo [scan_by * N_BX + scan_bx] <= color [3:0];
+                fb_hi [scan_by * N_BX + scan_bx] <= color [4];
 
-                if (bx_idx == N_BX - 1)
+                if (scan_bx == N_BX - 1)
+                begin
+                    scan_bx <= '0;
+                    eng_cx  <= view_left;
+
+                    if (scan_by == N_BY - 1)
+                    begin
+                        scan_by <= '0;
+                        eng_cy  <= view_top;
+                    end
+                    else
+                    begin
+                        scan_by <= scan_by + 1'b1;
+                        eng_cy  <= eng_cy - step;
+                    end
+                end
+                else
+                begin
+                    scan_bx <= scan_bx + 1'b1;
+                    eng_cx  <= eng_cx + step;
+                end
+
+                if (scan_restart)
                     state <= S_IDLE;
                 else
                 begin
-                    eng_cx <= eng_cx + step;
-                    bx_idx <= bx_idx + 8'd1;
-                    zx     <= '0;
-                    zy     <= '0;
-                    iter   <= '0;
-                    state  <= S_ITERATE;
+                    zx    <= '0;
+                    zy    <= '0;
+                    iter  <= '0;
+                    state <= S_ITERATE;
                 end
             end
 
@@ -555,20 +636,6 @@ module lab_top
             default: palette = 24'h000000;
         endcase
     endfunction
-
-    // Pipelined display read: the big line buffer mux is registered once,
-    // so its delay fits into one pixel period. The picture is simply shifted
-    // by one pixel.
-
-    logic [4:0] color_idx;
-
-    always_ff @ (posedge clk)
-    begin
-        if (rst)
-            color_idx <= '0;
-        else
-            color_idx <= line_buf [disp_sel] [bx];
-    end
 
     // The interior of the set is black; the escape time selects the color.
 
