@@ -7,11 +7,14 @@
 // of the row the display is about to enter are computed in advance and kept in
 // a double-buffered line buffer, so the picture has no per-block artifacts.
 //
-// The board runs the lab on a 62.5 MHz clock, 1.25 times faster than the
-// 50 MHz pixel clock of the 1024x600 video mode, which leaves the
-// escape-time engine enough cycles per block row. The display read is
-// pipelined with one register: the large line buffer mux fits into one lab
-// period, and the picture is simply shifted by one pixel.
+// The board runs the lab on the 50 MHz pixel clock of the 1024x600 video
+// mode: the lab and the display share one clock domain, so every path from
+// the pixel coordinates to the RGB output has a full 20 ns pixel period.
+// (An 1.25:1 clock ratio was tried and failed in hardware: the phase beats
+// of the 62.5/50 MHz pair leave only 4 ns for the combinational display
+// path, so the screen showed garbage.) The display read is pipelined with
+// one register: the large line buffer mux fits into one pixel period, and
+// the picture is simply shifted by one pixel.
 //
 // The view keeps square cells of the complex plane, so the picture is not
 // distorted on any screen: the initial view spans [-2.5, 1.5] horizontally,
@@ -32,10 +35,14 @@
 //   key[6] (S7) - reset the view
 //   key[7] (S8) - reset the view (spare)
 //
-// The iteration limit is fixed at 20, as in the MATLAB reference where the
+// The iteration limit is fixed at 31, as in the MATLAB reference where the
 // maxIter updates are commented out: zooming changes only the view, never
-// the rendering accuracy. The limit is shown on the TM1638 module's
-// seven-segment display (the two rightmost digits).
+// the rendering accuracy. 31 is the largest value that fits the 5-bit color
+// field (it is also the sentinel for the interior of the set), and it is
+// affordable at the maximum per-pixel (1x1) resolution thanks to 32
+// escape-time engines computing the pixel columns in parallel. The limit is
+// shown on the TM1638 module's seven-segment display (the two rightmost
+// digits).
 
 module lab_top
 # (
@@ -113,9 +120,12 @@ module lab_top
 
     localparam int FRAC_BITS = 24;
 
-    // One Mandelbrot point is computed per BLOCK_SIZE x BLOCK_SIZE pixel block.
+    // One Mandelbrot point is computed per pixel: BLOCK_SIZE = 1 gives the
+    // maximum resolution. The engines work per display line with a
+    // double-buffered line buffer.
 
-    localparam int BLOCK_SIZE = 4;
+    localparam int BLOCK_SIZE = 1;
+    localparam int BLOCK_LOG2 = $clog2 (BLOCK_SIZE);    // log2 of the block size
     localparam int N_BX = screen_width  / BLOCK_SIZE;   // block columns
     localparam int N_BY = screen_height / BLOCK_SIZE;   // block rows
 
@@ -128,12 +138,23 @@ module lab_top
     localparam logic signed [27:0] INIT_TOP  = (64'sd33554432 * N_BY) / N_BX;  // 2.0 * N_BY / N_BX
 
     // The iteration limit is fixed: zooming changes only the view, not the
-    // rendering accuracy. The value fits the row budget of the engine: with
-    // one point per 4x4 pixel block, a whole block row must be computed
-    // within four display lines. At 1024x600 with a 62.5 MHz lab clock the
-    // budget allows at most 24 iterations; 20 keeps a safe margin.
+    // rendering accuracy. The value uses the full 5-bit color range: 31 is
+    // the sentinel for the interior of the set, 1..30 are escape times.
 
-    localparam logic [5:0] MAX_ITER = 6'd20;
+    localparam logic [5:0] MAX_ITER = 6'd31;
+
+    // Each escape-time engine owns a contiguous segment of SEG_SIZE columns.
+    // With the lab running at the 50 MHz pixel clock, one display line lasts
+    // 1344 lab cycles, and a point costs at most (MAX_ITER + 2) = 33 cycles:
+    //   SEG_SIZE * 33 = 32 * 33 = 1056 cycles per line (79 % of the budget).
+    // Every segment has a single writer, so the synthesizer maps the line
+    // buffers to small memories instead of duplicating a shared buffer per
+    // write port (which blew the design up to 286720 registers). 32 engines
+    // x 3 DSP multipliers = 96 DSPs, well within the device.
+
+    localparam int SEG_SIZE = 32;
+    localparam int SEG_LOG2 = $clog2 (SEG_SIZE);
+    localparam int N_ENG = (N_BX + SEG_SIZE - 1) / SEG_SIZE;
 
     // Zoom factors, as in the MATLAB reference: 0.7 and 1 / 0.7.
 
@@ -367,12 +388,12 @@ module lab_top
     // Escape-time engine: one point per BLOCK_SIZE x BLOCK_SIZE pixel block
     //------------------------------------------------------------------------
 
-    wire [w_x - 3:0] bx = x [w_x - 1:2];   // block column, 0 .. N_BX - 1
-    wire [w_y - 3:0] by = y [w_y - 1:2];   // block row,    0 .. N_BY - 1
+    wire [w_x - BLOCK_LOG2 - 1:0] bx = x [w_x - 1:BLOCK_LOG2];   // column, 0 .. N_BX - 1
+    wire [w_y - BLOCK_LOG2 - 1:0] by = y [w_y - 1:BLOCK_LOG2];   // row,    0 .. N_BY - 1
 
-    // The row the engine is computing: the one the display enters next.
+    // The line the engines are computing: the one the display enters next.
 
-    wire [w_y - 3:0] next_row = (by == N_BY - 1) ? '0 : by + 1'b1;
+    wire [w_y - BLOCK_LOG2 - 1:0] next_row = (by == N_BY - 1) ? '0 : by + 1'b1;
 
     typedef enum logic [1:0]
     {
@@ -382,137 +403,165 @@ module lab_top
     }
     state_t;
 
-    state_t state;
+    // Shared row tracking: the row change pulse starts all the engines, and
+    // engine 0 also toggles the buffer select for the whole row.
 
-    logic [7:0] by_r;
+    logic [w_y - BLOCK_LOG2 - 1:0] by_r;
     logic       disp_sel;
-
-    wire row_change = (by != by_r);
-
-    // One line buffer per row, double buffered: the display reads one while
-    // the engine fills the other.
-
-    logic [4:0] line_buf [2][N_BX];
-
-    logic signed [27:0] eng_cx, eng_cy;   // coordinates of the current point
-    logic signed [27:0] zx, zy;           // current iteration value z = zx + i*zy
-    logic        [ 5:0] iter;             // current iteration number
-    logic        [ 4:0] color;            // escape time of the current point
-    logic        [ 7:0] bx_idx;           // block column being computed
-
-    // Iteration arithmetic: z_next = z^2 + c
-
-    logic signed [55:0] zx2_full, zy2_full, zxzy_full;
-
-    assign zx2_full  = $signed (zx) * $signed (zx);
-    assign zy2_full  = $signed (zy) * $signed (zy);
-    assign zxzy_full = $signed (zx) * $signed (zy);
-
-    // The squares are kept in 32 bits: the engine iterates points with
-    // |z| <= 2, so z^2 can reach 64.0, which does not fit the 28-bit Q4.24
-    // values themselves. The z registers truncate to Q4.24; the possible
-    // wrap of |z| at 8.0 cannot hide the escape, because the magnitude of
-    // the square is preserved by the wrap.
-
-    wire signed [31:0] zx2  = zx2_full  [55:24];
-    wire signed [31:0] zy2  = zy2_full  [55:24];
-    wire signed [31:0] zxzy = zxzy_full [55:24];
-
-    // The point escapes when |z|^2 > 4. The comparison uses the truncated
-    // squares: the truncation is exact within one LSB of the threshold and
-    // only shifts the color of the boundary points by one iteration.
-
-    wire signed [31:0] sq     = zx2 + zy2;
-    wire               escaped = sq > FOUR;
-
-    wire signed [27:0] zx_next = zx2 - zy2 + eng_cx;
-    wire signed [27:0] zy_next = (zxzy <<< 1) + eng_cy;
-
-    wire signed [27:0] row_offset;
-    assign row_offset = $signed ({1'b0, next_row}) * step;
 
     always_ff @ (posedge clk)
     begin
         if (rst)
         begin
-            state    <= S_IDLE;
             by_r     <= '0;
             disp_sel <= 1'b0;
-            eng_cx   <= '0;
-            eng_cy   <= '0;
-            zx       <= '0;
-            zy       <= '0;
-            iter     <= '0;
-            color    <= '0;
-            bx_idx   <= '0;
         end
         else
-        begin
             by_r <= by;
+    end
 
-            case (state)
+    wire row_change = (by != by_r);
 
-            S_IDLE:
+    // One line buffer per row, double buffered: the display reads one while
+    // the engines fill the other. Each engine writes only its own segment,
+    // so every memory has a single write port.
+
+    logic [4:0] line_buf [2][N_ENG][SEG_SIZE];
+
+    wire signed [27:0] row_offset;
+    assign row_offset = $signed ({1'b0, next_row}) * step;
+
+    // N_ENG escape-time engines compute the points of one line together:
+    // engine e owns the contiguous columns e * SEG_SIZE .. e * SEG_SIZE + 31
+    // and walks them left to right. The worst case of a point (all the
+    // iterations without an escape) takes MAX_ITER + 2 = 33 cycles:
+    //   SEG_SIZE * 33 = 1056 cycles per line, 79 % of the 1344 cycles
+    // available at the 50 MHz pixel clock.
+
+    for (genvar e = 0; e < N_ENG; e++)
+    begin : gen_eng
+
+        logic signed [27:0] eng_cx, eng_cy;   // coordinates of the current point
+        logic signed [27:0] zx, zy;           // current iteration value z = zx + i*zy
+        logic        [ 5:0] iter;             // current iteration number
+        logic        [ 4:0] color;            // escape time of the current point
+        logic [SEG_LOG2 - 1:0] bx_idx;        // column within this segment
+
+        // Iteration arithmetic: z_next = z^2 + c
+
+        logic signed [55:0] zx2_full, zy2_full, zxzy_full;
+
+        assign zx2_full  = $signed (zx) * $signed (zx);
+        assign zy2_full  = $signed (zy) * $signed (zy);
+        assign zxzy_full = $signed (zx) * $signed (zy);
+
+        // The squares are kept in 32 bits: the engines iterate points with
+        // |z| <= 2, so z^2 can reach 64.0, which does not fit the 28-bit
+        // Q4.24 values themselves. The z registers truncate to Q4.24; the
+        // possible wrap of |z| at 8.0 cannot hide the escape, because the
+        // magnitude of the square is preserved by the wrap.
+
+        wire signed [31:0] zx2  = zx2_full  [55:24];
+        wire signed [31:0] zy2  = zy2_full  [55:24];
+        wire signed [31:0] zxzy = zxzy_full [55:24];
+
+        // The point escapes when |z|^2 > 4. The comparison uses the truncated
+        // squares: the truncation is exact within one LSB of the threshold
+        // and only shifts the color of the boundary points by one iteration.
+
+        wire signed [31:0] sq     = zx2 + zy2;
+        wire               escaped = sq > FOUR;
+
+        wire signed [27:0] zx_next = zx2 - zy2 + eng_cx;
+        wire signed [27:0] zy_next = (zxzy <<< 1) + eng_cy;
+
+        state_t state;
+
+        always_ff @ (posedge clk)
+        begin
+            if (rst)
             begin
-                if (row_change)
-                begin
-                    disp_sel <= ~ disp_sel;
-                    eng_cx   <= view_left;
-                    eng_cy   <= view_top - row_offset;
-                    bx_idx   <= '0;
-                    zx       <= '0;
-                    zy       <= '0;
-                    iter     <= '0;
-                    state    <= S_ITERATE;
-                end
+                state    <= S_IDLE;
+                eng_cx   <= '0;
+                eng_cy   <= '0;
+                zx       <= '0;
+                zy       <= '0;
+                iter     <= '0;
+                color    <= '0;
+                bx_idx   <= '0;
             end
-
-            S_ITERATE:
+            else
             begin
-                if (iter == MAX_ITER)
-                begin
-                    // The point never escaped: it belongs to the set.
+                case (state)
 
-                    color <= MAX_ITER [4:0];
-                    state <= S_STORE;
-                end
-                else if (escaped)
+                S_IDLE:
                 begin
-                    // The escape time is the current iteration number.
+                    if (row_change)
+                    begin
+                        // Engine 0 owns the buffer swap for the whole row.
 
-                    color <= iter [4:0];
-                    state <= S_STORE;
+                        if (e == 0)
+                            disp_sel <= ~ disp_sel;
+
+                        eng_cx   <= view_left + e * SEG_SIZE * step;
+                        eng_cy   <= view_top - row_offset;
+                        bx_idx   <= '0;
+                        zx       <= '0;
+                        zy       <= '0;
+                        iter     <= '0;
+                        state    <= S_ITERATE;
+                    end
                 end
-                else
+
+                S_ITERATE:
                 begin
-                    zx   <= zx_next;
-                    zy   <= zy_next;
-                    iter <= iter + 6'd1;
+                    if (iter == MAX_ITER)
+                    begin
+                        // The point never escaped: it belongs to the set.
+
+                        color <= MAX_ITER [4:0];
+                        state <= S_STORE;
+                    end
+                    else if (escaped)
+                    begin
+                        // The escape time is the current iteration number.
+
+                        color <= iter [4:0];
+                        state <= S_STORE;
+                    end
+                    else
+                    begin
+                        zx   <= zx_next;
+                        zy   <= zy_next;
+                        iter <= iter + 6'd1;
+                    end
                 end
+
+                S_STORE:
+                begin
+                    // Store the color of this point into the segment of the
+                    // line buffer that is not being displayed, and start the
+                    // next point of the segment.
+
+                    line_buf [~ disp_sel] [e] [bx_idx] <= color;
+
+                    if (bx_idx == SEG_SIZE - 1)
+                        state <= S_IDLE;
+                    else
+                    begin
+                        eng_cx <= eng_cx + step;
+                        bx_idx <= bx_idx + 1'b1;
+                        zx     <= '0;
+                        zy     <= '0;
+                        iter   <= '0;
+                        state  <= S_ITERATE;
+                    end
+                end
+
+                endcase
             end
-
-            S_STORE:
-            begin
-                // Store the color of this point into the line buffer that is
-                // not being displayed, and start the next point of the row.
-
-                line_buf [~ disp_sel] [bx_idx] <= color;
-
-                if (bx_idx == N_BX - 1)
-                    state <= S_IDLE;
-                else
-                begin
-                    eng_cx <= eng_cx + step;
-                    bx_idx <= bx_idx + 8'd1;
-                    zx     <= '0;
-                    zy     <= '0;
-                    iter   <= '0;
-                    state  <= S_ITERATE;
-                end
-            end
-
-            endcase
         end
+
     end
 
     //------------------------------------------------------------------------
@@ -567,7 +616,8 @@ module lab_top
         if (rst)
             color_idx <= '0;
         else
-            color_idx <= line_buf [disp_sel] [bx];
+            color_idx <= line_buf [disp_sel] [bx [w_x - BLOCK_LOG2 - 1:SEG_LOG2]]
+                                              [bx [SEG_LOG2 - 1:0]];
     end
 
     // The interior of the set is black; the escape time selects the color.

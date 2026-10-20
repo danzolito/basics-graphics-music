@@ -32,9 +32,10 @@ module board_specific_top
     inout  wire       tm_dio
 );
 
-    // The AX7Z020B PL oscillator runs at 50 MHz. The HDMI transmitter derives
-    // a 62.5 MHz lab clock from it for the 1024x600 video mode.
-    localparam int CLK_MHZ = 62;
+    // The AX7Z020B PL oscillator runs at 50 MHz. The HDMI transmitter passes
+    // the 50 MHz pixel clock of the 1024x600 video mode to the lab, so the
+    // lab and the display share one clock domain.
+    localparam int CLK_MHZ = 50;
 
     localparam int W_KEY = 4;
     localparam int W_LED = 4;

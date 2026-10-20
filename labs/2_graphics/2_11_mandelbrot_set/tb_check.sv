@@ -91,32 +91,34 @@ module tb_check;
         #100;
         rst = 0;
 
-        // Move the display to the block row 74 (y = 296). The engine then
-        // computes row 75: cy = 1.171875 - 75 * 0.015625 = 0.
-        y = 296;
+        // Move the display to line 299. The engines then compute line 300:
+        // cy = 1.171875 - 300 * 0.00390625 = 0.
+        y = 299;
 
-        // Wait for the engine to compute all 256 points of that row
-        // (worst case 256 * 24 cycles = 96 us at 64 MHz).
+        // Wait for the engines to compute all 1024 points of that line
+        // (worst case 37 * 33 cycles per engine = 1221 cycles at 50 MHz).
         #120000;
 
-        // Move the display to row 75: the freshly computed line buffer
-        // becomes visible. Then wait for the engine to finish the next row
-        // it started, so the following row change is caught while idle.
+        // Move the display to line 300: the freshly computed line buffer
+        // becomes visible. Then wait for the engines to finish the next line
+        // they started, so the following line change is caught while idle.
         y = 300;
         #120000;
 
         check_pixel (  0, 8'h00, 8'h00, 8'h80);   // c = -2.5: escape time 1
         check_pixel (640, 8'h00, 8'h00, 8'h00);   // c =  0.0: inside, black
         check_pixel (832, 8'h00, 8'h40, 8'hFF);   // c =  0.75: escape time 3
+        check_pixel (836, 8'h00, 8'h40, 8'hFF);   // c =  0.765625 (the next
+                                                  // column of the same engine)
 
-        // Pan right (key[3], S4): the view moves right by 32 blocks, so at
+        // Pan right (key[3], S4): the view moves right by 128 points, so at
         // x = 640 the point becomes c = 0.5, which escapes at iteration 5.
         press_key (3);
 
-        // Let the engine finish the row it may still be computing, then
-        // recompute row 75 with the panned view.
+        // Let the engines finish the line they may still be computing, then
+        // recompute line 300 with the panned view.
         #120000;
-        y = 296;
+        y = 299;
         #120000;
         y = 300;
         #120000;
@@ -129,7 +131,7 @@ module tb_check;
         press_key (0);
 
         #120000;
-        y = 296;
+        y = 299;
         #120000;
         y = 300;
         #120000;
@@ -142,28 +144,54 @@ module tb_check;
         press_key (1);
 
         #120000;
-        y = 296;
+        y = 299;
         #120000;
         y = 300;
         #120000;
 
         check_pixel (640, 8'h00, 8'hC0, 8'hFF);   // c = 0.5: escape time 5
 
-        // The iteration limit is fixed: any zooming leaves it at 20.
+        // The iteration limit is fixed: any zooming leaves it at 31.
 
-        check_units (8'b11111100);   // units of 20 = "0"
+        check_units (8'b01100000);   // units of 31 = "1"
 
         repeat (20) press_key (1);   // zoom out to the widest view
-        check_units (8'b11111100);   // still 20 = "0"
+        check_units (8'b01100000);   // still 31 = "1"
 
         press_key (0);               // and zoom back in
         press_key (0);
-        check_units (8'b11111100);   // still 20 = "0"
+        check_units (8'b01100000);   // still 31 = "1"
 
         // Reset (key[6], S7): the initial view and the same limit.
 
         press_key (6);
-        check_units (8'b11111100);   // units of 20 = "0"
+        check_units (8'b01100000);   // units of 31 = "1"
+
+        // Scenario: pan left 8 times (view_left clamps at -4), then zoom in
+        // 8 times. The zoom center is (-2, 0): the left part of the view
+        // (x < -2) lies outside the set and must stay colored, the right
+        // part lies inside (black).
+
+        repeat (8) press_key (2);   // S3 - pan left
+        repeat (8) press_key (0);   // S1 - zoom in
+
+        #120000;
+        y = 299;
+        #120000;
+        y = 300;
+        #120000;
+
+        $display ("SCEN view_left=%0d step=%0d view_top=%0d",
+                  dut.view_left, dut.step, dut.view_top);
+
+        begin
+            integer px;
+            for (px = 0; px < 1024; px = px + 128)
+            begin
+                @(negedge clk); x = px [9:0]; @(negedge clk); @(negedge clk);
+                $display ("SCEN x=%0d rgb=%02x%02x%02x", px, red, green, blue);
+            end
+        end
 
         if (errors == 0)
             $display ("ALL CHECKS PASSED");

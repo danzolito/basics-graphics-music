@@ -27,9 +27,9 @@ module ax7z020b_hdmi
     // 50 MHz * 20 = 1000 MHz VCO.
     //   serial_clk = 1000 / 4  = 250 MHz   (5 x pixel clock)
     //   pixel_clk  = 1000 / 20 = 50 MHz    (the MPI7006 panel's pixel clock)
-    //   lab_clk    = 1000 / 16 = 62.5 MHz
-    // The lab runs 1.25 times faster than the pixel clock, which leaves the
-    // escape-time engine enough cycles per block row.
+    //   lab_clk    = 1000 / 20 = 50 MHz    (same as the pixel clock)
+    // The lab runs on the pixel clock itself: one clock domain for the whole
+    // design, so every display path has a full 20 ns pixel period.
     MMCME2_BASE
     # (
         .CLKIN1_PERIOD    (20.0),
@@ -37,7 +37,7 @@ module ax7z020b_hdmi
         .CLKFBOUT_MULT_F  (20.0),
         .CLKOUT0_DIVIDE_F (4.0),
         .CLKOUT1_DIVIDE   (20),
-        .CLKOUT2_DIVIDE   (16)
+        .CLKOUT2_DIVIDE   (20)
     )
     i_mmcm
     (

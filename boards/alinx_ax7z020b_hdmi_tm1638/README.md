@@ -40,9 +40,10 @@ Pin `V16` (`hdmi_oen`) enables the connector's +5 V supply and is active high.
 
 ## Implementation
 
-The HDMI transmitter (`ax7z020b_hdmi.sv`) derives a 62.5 MHz lab clock, a 50 MHz pixel
-clock and a 250 MHz serializer clock from the 50 MHz board oscillator and drives the
-TMDS lanes. The lab runs on the 62.5 MHz lab clock.
+The HDMI transmitter (`ax7z020b_hdmi.sv`) derives a 50 MHz pixel clock and a
+250 MHz serializer clock from the 50 MHz board oscillator and drives the TMDS
+lanes. The lab runs on the 50 MHz pixel clock itself, so the lab and the display
+share one clock domain.
 
 The lab reads the module's eight buttons through `tm1638_board_controller`
 (`peripherals/tm1638_board.sv`) in the direct order (S1 -> `key[0]` ... S8 -> `key[7]`):
