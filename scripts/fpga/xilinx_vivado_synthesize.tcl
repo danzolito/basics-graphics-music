@@ -46,7 +46,12 @@ read_verilog -sv [glob $extra_dot_dot../../../boards/$fpga_board/*.{v,sv}]
 
 read_xdc $extra_dot_dot../../../boards/$fpga_board/board_specific.xdc
 
+# The lab directory is listed first so the lab's own
+# lab_specific_board_config.svh takes precedence over the default one
+# in peripherals/ (synthesis runs in the lab's run/ directory, so ".."
+# is the lab directory itself).
 synth_design -verilog_define XILINX_VIVADO                        \
+             -include_dirs ..                                     \
              -include_dirs $extra_dot_dot../../../labs/common     \
              -include_dirs $extra_dot_dot../../../peripherals     \
              -part $part_name                                     \

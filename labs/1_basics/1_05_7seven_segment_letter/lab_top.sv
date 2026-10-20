@@ -86,36 +86,38 @@ module lab_top
         P     = 8'b1100_1110,
         G     = 8'b1011_1100,
         A     = 8'b1110_1110,
+        S     = 8'b101_10110,
+        D     = 8'b011_11010,
         space = 8'b0000_0000
     }
     seven_seg_encoding_e;
 
-    assign abcdefgh = key [0] ? P : F;
-    assign digit    = w_digit' (key [1] ? 2'b10 : 2'b01);
+    // assign abcdefgh = key [0] ? P : F;
+    // assign digit    = w_digit' (key [1] ? 2'b10 : 2'b01);
 
     // Exercise 1: Display the first letters
     // of your first name and last name instead.
 
-    // assign abcdefgh = ...
-    // assign digit    = ...
+    // assign abcdefgh = key [0] ? S : D;
+    // assign digit    = w_digit' (key [1] ? 2'b10 : 2'b01);
 
     // Exercise 2: Display letters of a 4-character word
     // using this code to display letter of FPGA as an example
 
-    /*
+    
     seven_seg_encoding_e letter;
 
     always_comb
-      case (4' (key))
-      4'b1000: letter = F;
-      4'b0100: letter = P;
-      4'b0010: letter = G;
-      4'b0001: letter = A;
-      default: letter = space;
-      endcase
+        case (4' (key))
+        4'b1000: letter = F;
+        4'b0100: letter = P;
+        4'b0010: letter = G;
+        4'b0001: letter = A;
+        default: letter = space;
+        endcase
 
     assign abcdefgh = letter;
     assign digit    = w_digit' (key);
-    */
+    
 
 endmodule
