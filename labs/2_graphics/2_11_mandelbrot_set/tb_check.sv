@@ -109,9 +109,9 @@ module tb_check;
         check_pixel (640, 8'h00, 8'h00, 8'h00);   // c =  0.0: inside, black
         check_pixel (832, 8'h00, 8'h40, 8'hFF);   // c =  0.75: escape time 3
 
-        // Pan right (key[2], S3): the view moves right by 32 blocks, so at
+        // Pan right (key[3], S4): the view moves right by 32 blocks, so at
         // x = 640 the point becomes c = 0.5, which escapes at iteration 5.
-        press_key (2);
+        press_key (3);
 
         // Let the engine finish the row it may still be computing, then
         // recompute row 75 with the panned view.
@@ -123,27 +123,44 @@ module tb_check;
 
         check_pixel (640, 8'h00, 8'hC0, 8'hFF);   // c = 0.5: escape time 5
 
-        // The seven-segment display shows the iteration limit (20 -> "20").
+        // Zoom in (key[0], S1): the view zooms in around the center. From
+        // the panned view (-2.0) the point at x = 640 becomes c = 0.35,
+        // which escapes at iteration 8.
+        press_key (0);
+
+        #120000;
+        y = 296;
+        #120000;
+        y = 300;
+        #120000;
+
+        check_pixel (640, 8'h00, 8'hFF, 8'h80);   // c = 0.35: escape time 8
+
+        // Zoom out (key[1], S2): the view returns exactly to the panned
+        // view, so x = 640 shows c = 0.5 again.
+
+        press_key (1);
+
+        #120000;
+        y = 296;
+        #120000;
+        y = 300;
+        #120000;
+
+        check_pixel (640, 8'h00, 8'hC0, 8'hFF);   // c = 0.5: escape time 5
+
+        // The iteration limit is fixed: any zooming leaves it at 20.
 
         check_units (8'b11111100);   // units of 20 = "0"
 
-        // Zoom in (key[0], S1): 20 -> 21.
+        repeat (20) press_key (1);   // zoom out to the widest view
+        check_units (8'b11111100);   // still 20 = "0"
 
+        press_key (0);               // and zoom back in
         press_key (0);
-        check_units (8'b01100000);   // units of 21 = "1"
+        check_units (8'b11111100);   // still 20 = "0"
 
-        // Zoom out twice (key[1], S2): 21 -> 20 -> 19.
-
-        press_key (1);
-        press_key (1);
-        check_units (8'b11100110);   // units of 19 = "9"
-
-        // The zoom-out floor: max (1, maxIter - 1) = 1.
-
-        repeat (20) press_key (1);
-        check_units (8'b01100000);   // units of 1 = "1"
-
-        // Reset (key[6], S7): back to 20.
+        // Reset (key[6], S7): the initial view and the same limit.
 
         press_key (6);
         check_units (8'b11111100);   // units of 20 = "0"

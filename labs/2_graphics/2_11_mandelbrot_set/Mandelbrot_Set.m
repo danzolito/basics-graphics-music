@@ -206,11 +206,11 @@ function mandelbrot_interactive()
             case 'q'
                 xl = cx + (xl - cx) * zoomStep;
                 yl = cy + (yl - cy) * zoomStep;
-                maxIter = maxIter + 1;
+                % maxIter = maxIter + 1;
             case 'e'
                 xl = cx + (xl - cx) / zoomStep;
                 yl = cy + (yl - cy) / zoomStep;
-                maxIter = max(1, maxIter - 1);
+                % maxIter = max(1, maxIter - 1);
             otherwise
                 return;
         end
