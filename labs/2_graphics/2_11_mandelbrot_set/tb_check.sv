@@ -111,7 +111,7 @@ module tb_check;
         check_pixel (836, 8'h00, 8'h40, 8'hFF);   // c =  0.765625 (the next
                                                   // column of the same engine)
 
-        // Pan right (key[3], S4): the view moves right by 128 points, so at
+        // Pan right (key[3], S4): the view moves right by 32 blocks, so at
         // x = 640 the point becomes c = 0.5, which escapes at iteration 5.
         press_key (3);
 
@@ -131,7 +131,7 @@ module tb_check;
         press_key (0);
 
         #120000;
-        y = 299;
+        y = 296;
         #120000;
         y = 300;
         #120000;
@@ -144,23 +144,23 @@ module tb_check;
         press_key (1);
 
         #120000;
-        y = 299;
+        y = 296;
         #120000;
         y = 300;
         #120000;
 
         check_pixel (640, 8'h00, 8'hC0, 8'hFF);   // c = 0.5: escape time 5
 
-        // The iteration limit is fixed: any zooming leaves it at 31.
+        // The iteration limit is fixed: any zooming leaves it at 20.
 
-        check_units (8'b01100000);   // units of 31 = "1"
+        check_units (8'b11111100);   // units of 20 = "0"
 
         repeat (20) press_key (1);   // zoom out to the widest view
-        check_units (8'b01100000);   // still 31 = "1"
+        check_units (8'b11111100);   // still 20 = "0"
 
         press_key (0);               // and zoom back in
         press_key (0);
-        check_units (8'b01100000);   // still 31 = "1"
+        check_units (8'b11111100);   // still 20 = "0"
 
         // Reset (key[6], S7): the initial view and the same limit.
 

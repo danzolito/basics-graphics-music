@@ -7,14 +7,11 @@
 // of the row the display is about to enter are computed in advance and kept in
 // a double-buffered line buffer, so the picture has no per-block artifacts.
 //
-// The board runs the lab on the 50 MHz pixel clock of the 1024x600 video
-// mode: the lab and the display share one clock domain, so every path from
-// the pixel coordinates to the RGB output has a full 20 ns pixel period.
-// (An 1.25:1 clock ratio was tried and failed in hardware: the phase beats
-// of the 62.5/50 MHz pair leave only 4 ns for the combinational display
-// path, so the screen showed garbage.) The display read is pipelined with
-// one register: the large line buffer mux fits into one pixel period, and
-// the picture is simply shifted by one pixel.
+// The board runs the lab on a 62.5 MHz clock, 1.25 times faster than the
+// 50 MHz pixel clock of the 1024x600 video mode, which leaves the
+// escape-time engine enough cycles per block row. The display read is
+// pipelined with one register: the large line buffer mux fits into one lab
+// period, and the picture is simply shifted by one pixel.
 //
 // The view keeps square cells of the complex plane, so the picture is not
 // distorted on any screen: the initial view spans [-2.5, 1.5] horizontally,
@@ -35,14 +32,10 @@
 //   key[6] (S7) - reset the view
 //   key[7] (S8) - reset the view (spare)
 //
-// The iteration limit is fixed at 31, as in the MATLAB reference where the
+// The iteration limit is fixed at 20, as in the MATLAB reference where the
 // maxIter updates are commented out: zooming changes only the view, never
-// the rendering accuracy. 31 is the largest value that fits the 5-bit color
-// field (it is also the sentinel for the interior of the set), and it is
-// affordable at the maximum per-pixel (1x1) resolution thanks to 32
-// escape-time engines computing the pixel columns in parallel. The limit is
-// shown on the TM1638 module's seven-segment display (the two rightmost
-// digits).
+// the rendering accuracy. The limit is shown on the TM1638 module's
+// seven-segment display (the two rightmost digits).
 
 module lab_top
 # (
@@ -138,23 +131,12 @@ module lab_top
     localparam logic signed [27:0] INIT_TOP  = (64'sd33554432 * N_BY) / N_BX;  // 2.0 * N_BY / N_BX
 
     // The iteration limit is fixed: zooming changes only the view, not the
-    // rendering accuracy. The value uses the full 5-bit color range: 31 is
-    // the sentinel for the interior of the set, 1..30 are escape times.
+    // rendering accuracy. The value fits the row budget of the engine: with
+    // one point per 4x4 pixel block, a whole block row must be computed
+    // within four display lines. At 1024x600 with a 62.5 MHz lab clock the
+    // budget allows at most 24 iterations; 20 keeps a safe margin.
 
-    localparam logic [5:0] MAX_ITER = 6'd31;
-
-    // Each escape-time engine owns a contiguous segment of SEG_SIZE columns.
-    // With the lab running at the 50 MHz pixel clock, one display line lasts
-    // 1344 lab cycles, and a point costs at most (MAX_ITER + 2) = 33 cycles:
-    //   SEG_SIZE * 33 = 32 * 33 = 1056 cycles per line (79 % of the budget).
-    // Every segment has a single writer, so the synthesizer maps the line
-    // buffers to small memories instead of duplicating a shared buffer per
-    // write port (which blew the design up to 286720 registers). 32 engines
-    // x 3 DSP multipliers = 96 DSPs, well within the device.
-
-    localparam int SEG_SIZE = 32;
-    localparam int SEG_LOG2 = $clog2 (SEG_SIZE);
-    localparam int N_ENG = (N_BX + SEG_SIZE - 1) / SEG_SIZE;
+    localparam logic [5:0] MAX_ITER = 6'd20;
 
     // Zoom factors, as in the MATLAB reference: 0.7 and 1 / 0.7.
 
@@ -513,18 +495,18 @@ module lab_top
                     end
                 end
 
-                S_ITERATE:
+            S_ITERATE:
+            begin
+                if (iter == MAX_ITER)
                 begin
-                    if (iter == MAX_ITER)
-                    begin
-                        // The point never escaped: it belongs to the set.
+                    // The point never escaped: it belongs to the set.
 
-                        color <= MAX_ITER [4:0];
-                        state <= S_STORE;
-                    end
-                    else if (escaped)
-                    begin
-                        // The escape time is the current iteration number.
+                    color <= MAX_ITER [4:0];
+                    state <= S_STORE;
+                end
+                else if (escaped)
+                begin
+                    // The escape time is the current iteration number.
 
                         color <= iter [4:0];
                         state <= S_STORE;
