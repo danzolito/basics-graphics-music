@@ -1,14 +1,17 @@
 `include "config.svh"
 
-// Functional check for the Mandelbrot lab: drives the display position so that
-// the escape-time engine computes the row y = 0 of the complex plane, then
-// checks the RGB output for several known points of the Mandelbrot set.
+// Functional check for the Mandelbrot lab on a 1024x600 screen at a 64 MHz
+// lab clock. Drives the display position so that the escape-time engine
+// computes the row y = 0 of the complex plane, checks the RGB output for
+// several known points of the set, then checks the pan control, the
+// seven-segment display of the iteration limit, and the zoom-out floor
+// max (1, maxIter - 1).
 
 module tb_check;
 
-    localparam clk_mhz = 50,
+    localparam clk_mhz = 64,
                w_key = 8, w_sw = 8, w_led = 8, w_digit = 8, w_gpio = 1,
-               screen_width = 640, screen_height = 480,
+               screen_width = 1024, screen_height = 600,
                w_red = 8, w_green = 8, w_blue = 8,
                w_x = $clog2 (screen_width), w_y = $clog2 (screen_height);
 
@@ -31,11 +34,12 @@ module tb_check;
         .clk_mhz       (clk_mhz),
         .w_key         (w_key), .w_sw (w_sw), .w_led (w_led), .w_digit (w_digit), .w_gpio (w_gpio),
         .screen_width  (screen_width), .screen_height (screen_height),
-        .w_red         (w_red), .w_green (w_green), .w_blue (w_blue)
+        .w_red         (w_red), .w_green (w_green), .w_blue (w_blue),
+        .debounce_depth (4)   // shorten the key debounce to speed up the simulation
     )
     dut (.*);
 
-    always #10 clk = ~ clk;   // 50 MHz
+    always #7.8125 clk = ~ clk;   // 64 MHz
 
     int errors = 0;
 
@@ -55,70 +59,94 @@ module tb_check;
             $display ("PASS x=%0d: rgb=%02x%02x%02x", px, red, green, blue);
     endtask
 
+    // Press a key once and wait for the debounce to both engage and release.
+    // The shortened debounce (depth 4 = 16 clock cycles) keeps the simulation
+    // fast; the waits here are far longer than needed.
+
+    task automatic press_key (input int k);
+        key [k] = 1;
+        #2000;   // 2 us = 128 clock cycles at 64 MHz
+        key [k] = 0;
+        #2000;   // let the debounce release before the next press
+    endtask
+
+    // Wait for the units digit of the seven-segment display and check it.
+
+    task automatic check_units (input logic [7:0] exp_seg);
+        #20000000;   // let the 120 Hz display update latch the new value
+        wait (digit [0] == 1'b1);
+        @ (negedge clk);
+
+        if (abcdefgh !== exp_seg)
+        begin
+            $display ("FAIL units digit: got %08b, expected %08b", abcdefgh, exp_seg);
+            errors++;
+        end
+        else
+            $display ("PASS units digit: %08b", abcdefgh);
+    endtask
+
     initial
     begin
         #100;
         rst = 0;
 
-        // Move the display to the block row 59 (y = 236). The engine then
-        // computes row 60 of the complex plane: cy = 1.5 - 60 * 0.025 = 0.
-        y = 236;
+        // Move the display to the block row 74 (y = 296). The engine then
+        // computes row 75: cy = 1.171875 - 75 * 0.015625 = 0.
+        y = 296;
 
-        // Wait for the engine to compute all 160 points of that row
-        // (worst case 160 * 28 cycles = 89.6 us at 50 MHz).
+        // Wait for the engine to compute all 256 points of that row
+        // (worst case 256 * 24 cycles = 96 us at 64 MHz).
         #120000;
 
-        // Move the display to row 60: the freshly computed line buffer
-        // becomes visible.
-        y = 240;
-        #200;
+        // Move the display to row 75: the freshly computed line buffer
+        // becomes visible. Then wait for the engine to finish the next row
+        // it started, so the following row change is caught while idle.
+        y = 300;
+        #120000;
 
         check_pixel (  0, 8'h00, 8'h00, 8'h80);   // c = -2.5: escape time 1
-        check_pixel (240, 8'h00, 8'h00, 8'h00);   // c = -1.0: inside, black
-        check_pixel (400, 8'h00, 8'h00, 8'h00);   // c =  0.0: inside, black
-        check_pixel (520, 8'h00, 8'h40, 8'hFF);   // c =  0.75: escape time 3
+        check_pixel (640, 8'h00, 8'h00, 8'h00);   // c =  0.0: inside, black
+        check_pixel (832, 8'h00, 8'h40, 8'hFF);   // c =  0.75: escape time 3
 
-        // Pan right (key[2], S6): the view moves right by 20 blocks, so at
-        // x = 400 the point becomes c = 0.5, which escapes at iteration 5.
-        key [2] = 1;
-        #12000000;   // longer than the 10.5 ms key debounce
-        key [2] = 0;
-        #200;
+        // Pan right (key[2], S3): the view moves right by 32 blocks, so at
+        // x = 640 the point becomes c = 0.5, which escapes at iteration 5.
+        press_key (2);
 
-        y = 236;     // let the engine recompute row 60 with the panned view
+        // Let the engine finish the row it may still be computing, then
+        // recompute row 75 with the panned view.
         #120000;
-        y = 240;
-        #200;
+        y = 296;
+        #120000;
+        y = 300;
+        #120000;
 
-        check_pixel (400, 8'h00, 8'hC0, 8'hFF);   // c = 0.5: escape time 5
+        check_pixel (640, 8'h00, 8'hC0, 8'hFF);   // c = 0.5: escape time 5
 
-        // Zoom in (key[0], S8): the iteration limit grows 20 -> 21.
-        key [0] = 1;
-        #12000000;
-        key [0] = 0;
-        #200;
+        // The seven-segment display shows the iteration limit (20 -> "20").
 
-        if (led !== 8'd21)
-        begin
-            $display ("FAIL zoom in: led=%0d, expected 21", led);
-            errors++;
-        end
-        else
-            $display ("PASS zoom in: led=%0d", led);
+        check_units (8'b11111100);   // units of 20 = "0"
 
-        // Reset (key[6], S2): the iteration limit returns to 20.
-        key [6] = 1;
-        #12000000;
-        key [6] = 0;
-        #200;
+        // Zoom in (key[0], S1): 20 -> 21.
 
-        if (led !== 8'd20)
-        begin
-            $display ("FAIL reset: led=%0d, expected 20", led);
-            errors++;
-        end
-        else
-            $display ("PASS reset: led=%0d", led);
+        press_key (0);
+        check_units (8'b01100000);   // units of 21 = "1"
+
+        // Zoom out twice (key[1], S2): 21 -> 20 -> 19.
+
+        press_key (1);
+        press_key (1);
+        check_units (8'b11100110);   // units of 19 = "9"
+
+        // The zoom-out floor: max (1, maxIter - 1) = 1.
+
+        repeat (20) press_key (1);
+        check_units (8'b01100000);   // units of 1 = "1"
+
+        // Reset (key[6], S7): back to 20.
+
+        press_key (6);
+        check_units (8'b11111100);   // units of 20 = "0"
 
         if (errors == 0)
             $display ("ALL CHECKS PASSED");

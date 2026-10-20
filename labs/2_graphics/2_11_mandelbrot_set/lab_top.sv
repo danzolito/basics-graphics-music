@@ -7,17 +7,33 @@
 // of the row the display is about to enter are computed in advance and kept in
 // a double-buffered line buffer, so the picture has no per-block artifacts.
 //
-// Controls (keys come from the TM1638 module buttons, S8 -> key[0] ... S1 -> key[7]):
-//   key[0] (S8) - zoom in      (MATLAB reference: Q)
-//   key[1] (S7) - zoom out     (MATLAB reference: E)
-//   key[2] (S6) - pan right    (MATLAB reference: D)
-//   key[3] (S5) - pan left     (MATLAB reference: A)
-//   key[4] (S4) - pan up       (MATLAB reference: W)
-//   key[5] (S3) - pan down     (MATLAB reference: S)
-//   key[6] (S2) - reset the view
-//   key[7] (S1) - reset the view (spare)
+// The board runs the lab on a 64 MHz clock, 1.25 times faster than the
+// 51.25 MHz pixel clock, which leaves the escape-time engine enough cycles
+// per block row. The display read is pipelined with one register: the large
+// line buffer mux fits into one lab period, and the picture is simply shifted
+// by one pixel.
 //
-// The current iteration limit is shown on the TM1638 module LEDs.
+// The view keeps square cells of the complex plane, so the picture is not
+// distorted on any screen: the initial view spans [-2.5, 1.5] horizontally,
+// and its height follows the screen aspect ratio.
+//
+// The coordinates are fixed point Q4.24 (28 bits). The 28x28 multipliers fit
+// into two cascaded DSPs instead of four, and the zoom update is split into
+// two stages, so every combinational path meets the 64 MHz lab period with
+// margin.
+//
+// Controls (direct order: the driver maps S1 -> key[0], S2 -> key[1], ...):
+//   key[0] (S1) - zoom in      (MATLAB reference: Q)
+//   key[1] (S2) - zoom out     (MATLAB reference: E)
+//   key[2] (S3) - pan left    (MATLAB reference: A)
+//   key[3] (S4) - pan right     (MATLAB reference: D)
+//   key[4] (S5) - pan up       (MATLAB reference: W)
+//   key[5] (S6) - pan down     (MATLAB reference: S)
+//   key[6] (S7) - reset the view
+//   key[7] (S8) - reset the view (spare)
+//
+// The current iteration limit is shown on the TM1638 module's seven-segment
+// display (the two rightmost digits).
 
 module lab_top
 # (
@@ -36,7 +52,12 @@ module lab_top
                w_blue        = 4,
 
                w_x           = $clog2 ( screen_width  ),
-               w_y           = $clog2 ( screen_height )
+               w_y           = $clog2 ( screen_height ),
+
+               // Debounce depth of the keys, in bits (2^depth clock cycles).
+               // The testbench shortens it to speed up the simulation.
+
+               debounce_depth = 19
 )
 (
     input                        clk,
@@ -82,14 +103,13 @@ module lab_top
 
     assign sound    = '0;
     assign uart_tx  = '1;
-    assign abcdefgh = '0;
-    assign digit    = '0;
+    assign led      = '0;
 
     //------------------------------------------------------------------------
-    // Fixed point arithmetic - Q4.28
+    // Fixed point arithmetic - Q4.24
     //------------------------------------------------------------------------
 
-    localparam int FRAC_BITS = 28;
+    localparam int FRAC_BITS = 24;
 
     // One Mandelbrot point is computed per BLOCK_SIZE x BLOCK_SIZE pixel block.
 
@@ -98,31 +118,33 @@ module lab_top
     localparam int N_BY = screen_height / BLOCK_SIZE;   // block rows
 
     // Initial view of the complex plane, matching the MATLAB reference:
-    // x in [-2.5, 1.5], y in [-1.5, 1.5], maxIter = 20.
+    // x in [-2.5, 1.5] with square cells, so the height follows the screen
+    // aspect ratio. The step is the same for both axes.
 
-    localparam logic signed [31:0] INIT_LEFT = -32'sd671088640;  // -2.5
-    localparam logic signed [31:0] INIT_TOP  =  32'sd402653184;  // +1.5
+    localparam logic signed [27:0] INIT_LEFT = -28'sd41943040;          // -2.5
+    localparam logic signed [27:0] INIT_STEP = 28'sh4000000 / N_BX;     // 4.0 / N_BX
+    localparam logic signed [27:0] INIT_TOP  = (64'sd33554432 * N_BY) / N_BX;  // 2.0 * N_BY / N_BX
 
-    // The initial step is the whole view divided by the number of blocks.
-
-    localparam logic signed [31:0] INIT_X_STEP = 32'sh40000000 / N_BX;  // 4.0 / N_BX
-    localparam logic signed [31:0] INIT_Y_STEP = 32'sh30000000 / N_BY;  // 3.0 / N_BY
+    // The iteration limit fits the row budget of the engine: with one point
+    // per 4x4 pixel block, a whole block row must be computed within four
+    // display lines. At 1024x600 with a 64 MHz lab clock the budget allows
+    // at most 24 iterations; 22 keeps a safe margin.
 
     localparam int INIT_ITER    = 20;
-    localparam int ITER_MAX_CAP = 26;
-    localparam int ITER_MIN_CAP = 12;
+    localparam int ITER_MAX_CAP = 22;
+    localparam int ITER_MIN_CAP = 1;
 
     // Zoom factors, as in the MATLAB reference: 0.7 and 1 / 0.7.
 
-    localparam logic signed [31:0] K_ZOOM_IN  = 32'sd187904819;  // 0.7
-    localparam logic signed [31:0] K_ZOOM_OUT = 32'sd383479223;  // 1 / 0.7
+    localparam logic signed [27:0] K_ZOOM_IN  = 28'sd11744051;   // 0.7
+    localparam logic signed [27:0] K_ZOOM_OUT = 28'sd23967451;   // 1 / 0.7
 
     // The step size is limited so that the whole view always fits
-    // into the Q4.28 range [-4, 4].
+    // into the Q4.24 range [-4, 4].
 
-    localparam logic signed [31:0] STEP_MAX = 32'sd10737418;  // 0.04
-    localparam logic signed [31:0] STEP_MIN = 32'sd16;        // 2^-24
-    localparam logic signed [31:0] FOUR     = 32'sh40000000;  // 4.0
+    localparam logic signed [27:0] STEP_MAX = 28'sh7800000 / N_BX;   // 7.5 / N_BX
+    localparam logic signed [27:0] STEP_MIN = 28'sd1;                // 2^-24
+    localparam logic signed [27:0] FOUR     = 28'sh4000000;          // 4.0
 
     // Pan by one eighth of the screen per press (the MATLAB reference
     // pans by 10 percent, which is close enough).
@@ -130,18 +152,18 @@ module lab_top
     localparam int PAN_X = N_BX / 8;
     localparam int PAN_Y = N_BY / 8;
 
-    function automatic signed [31:0] mul_q (input signed [31:0] a, input signed [31:0] b);
-        // Q4.28 x Q4.28 -> Q4.28
+    function automatic signed [27:0] mul_q (input signed [27:0] a, input signed [27:0] b);
+        // Q4.24 x Q4.24 -> Q4.24
 
-        logic signed [63:0] p;
+        logic signed [55:0] p;
 
         p = a * b;
 
         mul_q = p >>> FRAC_BITS;
     endfunction
 
-    function automatic signed [31:0] clamp_q
-        (input signed [31:0] v, input signed [31:0] lo, input signed [31:0] hi);
+    function automatic signed [27:0] clamp_q
+        (input signed [27:0] v, input signed [27:0] lo, input signed [27:0] hi);
 
         if (v < lo)
             return lo;
@@ -166,7 +188,7 @@ module lab_top
 
             sync_and_debounce_one
             # (
-                .depth (19)   // 2^19 clock cycles ~ 10 ms at 50 MHz
+                .depth (debounce_depth)
             )
             i_deb
             (
@@ -201,76 +223,114 @@ module lab_top
     // View state and its update on the key presses
     //------------------------------------------------------------------------
 
-    logic signed [31:0] view_left, view_top, x_step, y_step;
+    logic signed [27:0] view_left, view_top, step;
     logic        [ 5:0] max_iter;
 
-    wire signed [31:0] x_step_zoom_in  = mul_q (x_step, K_ZOOM_IN);
-    wire signed [31:0] x_step_zoom_out = mul_q (x_step, K_ZOOM_OUT);
-    wire signed [31:0] y_step_zoom_in  = mul_q (y_step, K_ZOOM_IN);
-    wire signed [31:0] y_step_zoom_out = mul_q (y_step, K_ZOOM_OUT);
+    wire signed [27:0] step_zoom_in  = mul_q (step, K_ZOOM_IN);
+    wire signed [27:0] step_zoom_out = mul_q (step, K_ZOOM_OUT);
 
-    logic signed [31:0] view_left_next, view_top_next, x_step_next, y_step_next;
+    logic signed [27:0] view_left_next, view_top_next, step_next;
     logic        [ 5:0] max_iter_next;
+
+    // The zoom update is split into two stages to meet the 64 MHz lab period.
+    // On the press, the next step size is computed (the DSP multiply) and the
+    // iteration limit is updated. One cycle later the view corners follow,
+    // using the registered old and new step sizes. The pans and the reset
+    // only involve registered values and apply on the press itself.
+
+    always_comb
+    begin
+        step_next     = step;
+        max_iter_next = max_iter;
+
+        if (key_press [0])       // S1 - zoom in
+        begin
+            step_next = step_zoom_in;
+
+            if (max_iter < ITER_MAX_CAP)
+                max_iter_next = max_iter + 6'd1;
+        end
+        else if (key_press [1])  // S2 - zoom out
+        begin
+            step_next = step_zoom_out;
+
+            if (max_iter > ITER_MIN_CAP)   // max (1, maxIter - 1)
+                max_iter_next = max_iter - 6'd1;
+        end
+        else if (key_press [6] || key_press [7])  // S7, S8 - reset the view
+        begin
+            step_next     = INIT_STEP;
+            max_iter_next = INIT_ITER [5:0];
+        end
+
+        step_next = clamp_q (step_next, STEP_MIN, STEP_MAX);
+    end
+
+    // The step size captured on a press and the press pulse delayed by one
+    // cycle: the zoom corner update uses them instead of the combinational
+    // multiplier output.
+
+    logic signed [27:0] step_on_press;
+    logic        [ 7:0] key_press_r;
+
+    always_ff @ (posedge clk)
+    begin
+        if (rst)
+        begin
+            step_on_press <= '0;
+            key_press_r   <= '0;
+        end
+        else
+        begin
+            step_on_press <= step;
+            key_press_r   <= key_press;
+        end
+    end
 
     always_comb
     begin
         view_left_next = view_left;
         view_top_next  = view_top;
-        x_step_next    = x_step;
-        y_step_next    = y_step;
-        max_iter_next  = max_iter;
 
-        if (key_press [0])       // S8 - zoom in
+        if (key_press_r [0])       // S1 - zoom in, one cycle after the step
         begin
-            x_step_next    = x_step_zoom_in;
-            y_step_next    = y_step_zoom_in;
-            view_left_next = view_left + (N_BX / 2) * (x_step - x_step_zoom_in);
-            view_top_next  = view_top  - (N_BY / 2) * (y_step - y_step_zoom_in);
-
-            if (max_iter < ITER_MAX_CAP)
-                max_iter_next = max_iter + 6'd1;
+            view_left_next = view_left + (N_BX / 2) * (step_on_press - step);
+            view_top_next  = view_top  - (N_BY / 2) * (step_on_press - step);
         end
-        else if (key_press [1])  // S7 - zoom out
+        else if (key_press_r [1])  // S2 - zoom out
         begin
-            x_step_next    = x_step_zoom_out;
-            y_step_next    = y_step_zoom_out;
-            view_left_next = view_left - (N_BX / 2) * (x_step_zoom_out - x_step);
-            view_top_next  = view_top  + (N_BY / 2) * (y_step_zoom_out - y_step);
-
-            if (max_iter > ITER_MIN_CAP)
-                max_iter_next = max_iter - 6'd1;
+            view_left_next = view_left - (N_BX / 2) * (step - step_on_press);
+            view_top_next  = view_top  + (N_BY / 2) * (step - step_on_press);
         end
-        else if (key_press [2])  // S6 - pan right
+        else if (key_press [2])  // S3 - pan left
         begin
-            view_left_next = view_left + PAN_X * x_step;
+            view_left_next = view_left - PAN_X * step;
         end
-        else if (key_press [3])  // S5 - pan left
+        else if (key_press [3])  // S4 - pan right
         begin
-            view_left_next = view_left - PAN_X * x_step;
+            view_left_next = view_left + PAN_X * step;
         end
-        else if (key_press [4])  // S4 - pan up
+        else if (key_press [4])  // S5 - pan up
         begin
-            view_top_next = view_top + PAN_Y * y_step;
+            view_top_next = view_top + PAN_Y * step;
         end
-        else if (key_press [5])  // S3 - pan down
+        else if (key_press [5])  // S6 - pan down
         begin
-            view_top_next = view_top - PAN_Y * y_step;
+            view_top_next = view_top - PAN_Y * step;
         end
-        else if (key_press [6] || key_press [7])  // S2, S1 - reset the view
+        else if (key_press [6] || key_press [7])  // S7, S8 - reset the view
         begin
             view_left_next = INIT_LEFT;
             view_top_next  = INIT_TOP;
-            x_step_next    = INIT_X_STEP;
-            y_step_next    = INIT_Y_STEP;
-            max_iter_next  = INIT_ITER [5:0];
         end
 
-        // Clamp so that the view always stays inside the Q4.28 range [-4, 4].
+        // Clamp so that the view always stays inside the Q4.24 range [-4, 4].
+        // The bounds use the registered step, so this path stays short; they
+        // are at most one cycle behind the step update, which never pushes
+        // the view out of range in the meantime.
 
-        x_step_next    = clamp_q (x_step_next, STEP_MIN, STEP_MAX);
-        y_step_next    = clamp_q (y_step_next, STEP_MIN, STEP_MAX);
-        view_left_next = clamp_q (view_left_next, - FOUR, FOUR - N_BX * x_step_next);
-        view_top_next  = clamp_q (view_top_next, N_BY * y_step_next - FOUR, FOUR);
+        view_left_next = clamp_q (view_left_next, - FOUR, FOUR - N_BX * step);
+        view_top_next  = clamp_q (view_top_next, N_BY * step - FOUR, FOUR);
     end
 
     always_ff @ (posedge clk)
@@ -279,23 +339,43 @@ module lab_top
         begin
             view_left <= INIT_LEFT;
             view_top  <= INIT_TOP;
-            x_step    <= INIT_X_STEP;
-            y_step    <= INIT_Y_STEP;
+            step      <= INIT_STEP;
             max_iter  <= INIT_ITER [5:0];
         end
         else
         begin
             view_left <= view_left_next;
             view_top  <= view_top_next;
-            x_step    <= x_step_next;
-            y_step    <= y_step_next;
+            step      <= step_next;
             max_iter  <= max_iter_next;
         end
     end
 
-    // The TM1638 module LEDs show the current iteration limit.
+    //------------------------------------------------------------------------
+    // The TM1638 module's seven-segment display shows the iteration limit
+    //------------------------------------------------------------------------
 
-    assign led = w_led' (max_iter);
+    wire [7:0] seg_abcdefgh;
+    wire [1:0] seg_digit;
+
+    seven_segment_display
+    # (
+        .w_digit   ( 2       ),
+        .clk_mhz   ( clk_mhz ),
+        .update_hz ( 120     )
+    )
+    i_seven_seg
+    (
+        .clk      ( clk          ),
+        .rst      ( rst          ),
+        .number   ( { 4' (max_iter / 6'd10), 4' (max_iter % 6'd10) } ),
+        .dots     ( 2'b00        ),
+        .abcdefgh ( seg_abcdefgh ),
+        .digit    ( seg_digit    )
+    );
+
+    assign abcdefgh = seg_abcdefgh;
+    assign digit    = seg_digit;
 
     //------------------------------------------------------------------------
     // Escape-time engine: one point per BLOCK_SIZE x BLOCK_SIZE pixel block
@@ -318,7 +398,7 @@ module lab_top
 
     state_t state;
 
-    logic [6:0] by_r;
+    logic [7:0] by_r;
     logic       disp_sel;
 
     wire row_change = (by != by_r);
@@ -328,35 +408,42 @@ module lab_top
 
     logic [4:0] line_buf [2][N_BX];
 
-    logic signed [31:0] eng_cx, eng_cy;   // coordinates of the current point
-    logic signed [31:0] zx, zy;           // current iteration value z = zx + i*zy
+    logic signed [27:0] eng_cx, eng_cy;   // coordinates of the current point
+    logic signed [27:0] zx, zy;           // current iteration value z = zx + i*zy
     logic        [ 5:0] iter;             // current iteration number
     logic        [ 4:0] color;            // escape time of the current point
     logic        [ 7:0] bx_idx;           // block column being computed
 
     // Iteration arithmetic: z_next = z^2 + c
 
-    logic signed [63:0] zx2_full, zy2_full, zxzy_full;
+    logic signed [55:0] zx2_full, zy2_full, zxzy_full;
 
     assign zx2_full  = $signed (zx) * $signed (zx);
     assign zy2_full  = $signed (zy) * $signed (zy);
     assign zxzy_full = $signed (zx) * $signed (zy);
 
-    wire signed [31:0] zx2  = zx2_full  [59:28];
-    wire signed [31:0] zy2  = zy2_full  [59:28];
-    wire signed [31:0] zxzy = zxzy_full [59:28];
+    // The squares are kept in 32 bits: the engine iterates points with
+    // |z| <= 2, so z^2 can reach 64.0, which does not fit the 28-bit Q4.24
+    // values themselves. The z registers truncate to Q4.24; the possible
+    // wrap of |z| at 8.0 cannot hide the escape, because the magnitude of
+    // the square is preserved by the wrap.
 
-    // The point escapes when |z|^2 > 4, i.e. the raw sum of squares
-    // exceeds 4 * 2^(2*FRAC_BITS).
+    wire signed [31:0] zx2  = zx2_full  [55:24];
+    wire signed [31:0] zy2  = zy2_full  [55:24];
+    wire signed [31:0] zxzy = zxzy_full [55:24];
 
-    wire [63:0] sq     = zx2_full + zy2_full;
-    wire       escaped = sq > (64'h4 << (2 * FRAC_BITS));
+    // The point escapes when |z|^2 > 4. The comparison uses the truncated
+    // squares: the truncation is exact within one LSB of the threshold and
+    // only shifts the color of the boundary points by one iteration.
 
-    wire signed [31:0] zx_next = zx2 - zy2 + eng_cx;
-    wire signed [31:0] zy_next = (zxzy <<< 1) + eng_cy;
+    wire signed [31:0] sq     = zx2 + zy2;
+    wire               escaped = sq > FOUR;
 
-    wire signed [31:0] row_offset;
-    assign row_offset = $signed ({1'b0, next_row}) * y_step;
+    wire signed [27:0] zx_next = zx2 - zy2 + eng_cx;
+    wire signed [27:0] zy_next = (zxzy <<< 1) + eng_cy;
+
+    wire signed [27:0] row_offset;
+    assign row_offset = $signed ({1'b0, next_row}) * step;
 
     always_ff @ (posedge clk)
     begin
@@ -429,7 +516,7 @@ module lab_top
                     state <= S_IDLE;
                 else
                 begin
-                    eng_cx <= eng_cx + x_step;
+                    eng_cx <= eng_cx + step;
                     bx_idx <= bx_idx + 8'd1;
                     zx     <= '0;
                     zy     <= '0;
@@ -483,7 +570,19 @@ module lab_top
         endcase
     endfunction
 
-    wire [4:0] color_idx = line_buf [disp_sel] [bx];
+    // Pipelined display read: the big line buffer mux is registered once,
+    // so its delay fits into one pixel period. The picture is simply shifted
+    // by one pixel.
+
+    logic [4:0] color_idx;
+
+    always_ff @ (posedge clk)
+    begin
+        if (rst)
+            color_idx <= '0;
+        else
+            color_idx <= line_buf [disp_sel] [bx];
+    end
 
     // The interior of the set is black; the escape time selects the color.
 

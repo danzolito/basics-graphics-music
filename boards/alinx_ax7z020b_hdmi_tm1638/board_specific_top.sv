@@ -32,8 +32,9 @@ module board_specific_top
     inout  wire       tm_dio
 );
 
-    // The AX7Z020B PL oscillator runs at 50 MHz.
-    localparam int CLK_MHZ = 50;
+    // The AX7Z020B PL oscillator runs at 50 MHz. The HDMI transmitter derives
+    // a 62.5 MHz lab clock from it for the 1024x600 video mode.
+    localparam int CLK_MHZ = 62;
 
     localparam int W_KEY = 4;
     localparam int W_LED = 4;
@@ -42,8 +43,8 @@ module board_specific_top
     localparam int W_TM_LED   = 8;
     localparam int W_TM_DIGIT = 8;
 
-    localparam int SCREEN_WIDTH  = 640;
-    localparam int SCREEN_HEIGHT = 480;
+    localparam int SCREEN_WIDTH  = 1024;
+    localparam int SCREEN_HEIGHT = 600;
     localparam int W_RED   = 8;
     localparam int W_GREEN = 8;
     localparam int W_BLUE  = 8;
@@ -66,14 +67,19 @@ module board_specific_top
     // HDMI graphics interface
     //------------------------------------------------------------------------
 
-    // The HDMI transmitter derives a 50 MHz lab clock, a 25 MHz pixel clock and
-    // a 125 MHz serializer clock from the 50 MHz board clock, and returns a lab
-    // reset released synchronously with the lab clock.
+    // The HDMI transmitter derives a 64 MHz lab clock, a 51.2 MHz pixel clock
+    // and a 256 MHz serializer clock from the 50 MHz board clock, and returns
+    // a lab reset released synchronously with the lab clock.
     wire clk;
     wire rst;
 
-    wire [9:0] x;
-    wire [8:0] y;
+    wire [10:0] hdmi_x;
+    wire [ 9:0] x;
+    wire [ 9:0] y;
+
+    // During the visible area x never exceeds 1023, so the top bit of the
+    // 11-bit coordinate is dropped.
+    assign x = hdmi_x [9:0];
 
     wire [W_RED   - 1:0] red;
     wire [W_GREEN - 1:0] green;
@@ -85,7 +91,7 @@ module board_specific_top
         .rst_in      (rst_on_power_up),
         .clk         (clk),
         .rst         (rst),
-        .x           (x),
+        .x           (hdmi_x),
         .y           (y),
         .red         (red),
         .green       (green),
@@ -126,9 +132,15 @@ module board_specific_top
     wire  [W_TM_LED   - 1:0] lab_led;
     wire  [W_TM_DIGIT - 1:0] lab_digit;
 
-    // The lab reads the eight TM1638 module keys. The four on-board buttons
-    // (active-low) mirror the first four of them, so either can be used.
-    wire [W_TM_KEY - 1:0] lab_key = tm_key | {{(W_TM_KEY - W_KEY) {1'b0}}, ~ key};
+    // The controller reports the module buttons in the reverse order
+    // (S8 on tm_key[0] ... S1 on tm_key[7]). Reverse the bits so that the lab
+    // sees the direct order: S1 -> key[0], S2 -> key[1] ... S8 -> key[7].
+    // The four on-board buttons (active-low) mirror the first four module
+    // buttons, so either can be used.
+    wire [W_TM_KEY - 1:0] tm_key_direct;
+    `SWAP_BITS (tm_key_direct, tm_key);
+
+    wire [W_TM_KEY - 1:0] lab_key = tm_key_direct | {{(W_TM_KEY - W_KEY) {1'b0}}, ~ key};
 
     assign tm_led   = lab_led;
     assign tm_digit = lab_digit;

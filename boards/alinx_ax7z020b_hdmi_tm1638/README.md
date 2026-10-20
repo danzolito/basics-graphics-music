@@ -40,15 +40,16 @@ Pin `V16` (`hdmi_oen`) enables the connector's +5 V supply and is active high.
 
 ## Implementation
 
-The HDMI transmitter (`ax7z020b_hdmi.sv`) derives a 50 MHz lab clock, a 25 MHz pixel
-clock and a 125 MHz serializer clock from the 50 MHz board oscillator and drives the
-TMDS lanes. The lab runs on the 50 MHz lab clock.
+The HDMI transmitter (`ax7z020b_hdmi.sv`) derives a 62.5 MHz lab clock, a 50 MHz pixel
+clock and a 250 MHz serializer clock from the 50 MHz board oscillator and drives the
+TMDS lanes. The lab runs on the 62.5 MHz lab clock.
 
 The lab reads the module's eight buttons through `tm1638_board_controller`
-(`peripherals/tm1638_board.sv`) and drives the module's LEDs and digits. The four
-on-board buttons mirror the first four module keys, and the four on-board LEDs mirror
-the first four module LEDs. The lab's segment order `abcdefgh` is reversed into the
-controller's `hgfedcba` order.
+(`peripherals/tm1638_board.sv`) in the direct order (S1 -> `key[0]` ... S8 -> `key[7]`):
+the controller's reversed scan order is bit-reversed in the wrapper. The four on-board
+buttons mirror the first four module keys. The lab's segment order `abcdefgh` is
+reversed into the controller's `hgfedcba` order.
 
-Video mode: 640×480, 8 bits per color, 25 MHz pixel clock, negative h/v sync. There is
-no EDID negotiation, hot-plug detection, HDMI audio, or HDCP support.
+Video mode: 1024×600, 8 bits per color, 50 MHz pixel clock (1344×620 total frame,
+negative h/v sync), about 60 Hz — the timing of the MPI7006 7-inch 1024×600 panel.
+There is no EDID negotiation, hot-plug detection, HDMI audio, or HDCP support.

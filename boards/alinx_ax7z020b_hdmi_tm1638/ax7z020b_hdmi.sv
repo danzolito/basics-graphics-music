@@ -1,15 +1,16 @@
 `include "config.svh"
 
-// Fixed 640x480 video mode: 25 MHz pixels, 800x525 total, about 59.52 Hz.
-// Reuse the common timing generator and encoder; serialize in Zynq-7000 I/O.
+// Fixed 1024x600 video mode for the MPI7006 7-inch panel over HDMI:
+// 50 MHz pixels, 1344x620 total, about 59.997 Hz.
+// Reuse the common TMDS encoder; serialize in Zynq-7000 I/O.
 module ax7z020b_hdmi
 (
     input        clk_in,
     input        rst_in,
     output       clk,
     output       rst,
-    output [9:0] x,
-    output [8:0] y,
+    output [10:0] x,
+    output [ 9:0] y,
     input  [7:0] red,
     input  [7:0] green,
     input  [7:0] blue,
@@ -23,15 +24,20 @@ module ax7z020b_hdmi
     wire pixel_clk_raw, serial_clk_raw, lab_clk_raw;
     wire pixel_clk, serial_clk, locked;
 
-    // 50 MHz * 20 = 1000 MHz VCO. DDR serialization needs 5x pixel clock.
+    // 50 MHz * 20 = 1000 MHz VCO.
+    //   serial_clk = 1000 / 4  = 250 MHz   (5 x pixel clock)
+    //   pixel_clk  = 1000 / 20 = 50 MHz    (the MPI7006 panel's pixel clock)
+    //   lab_clk    = 1000 / 16 = 62.5 MHz
+    // The lab runs 1.25 times faster than the pixel clock, which leaves the
+    // escape-time engine enough cycles per block row.
     MMCME2_BASE
     # (
         .CLKIN1_PERIOD    (20.0),
         .DIVCLK_DIVIDE    (1),
         .CLKFBOUT_MULT_F  (20.0),
-        .CLKOUT0_DIVIDE_F (8.0),
-        .CLKOUT1_DIVIDE   (40),
-        .CLKOUT2_DIVIDE   (20)
+        .CLKOUT0_DIVIDE_F (4.0),
+        .CLKOUT1_DIVIDE   (20),
+        .CLKOUT2_DIVIDE   (16)
     )
     i_mmcm
     (
@@ -76,7 +82,7 @@ module ax7z020b_hdmi
     assign hdmi_enable = ~ pixel_rst;
 
     wire hsync, vsync, visible;
-    dvi_sync i_sync
+    dvi_sync_1024x600 i_sync
     (
         .clk_i (pixel_clk), .rst_i (pixel_rst),
         .hsync_o (hsync), .vsync_o (vsync),
@@ -136,6 +142,94 @@ module ax7z020b_hdmi
         .rst (pixel_rst), .symbol (10'b1111100000),
         .p (tmds_clk_p), .n (tmds_clk_n)
     );
+endmodule
+
+// 1024x600@60 video timing for the MPI7006 panel: 1024 visible, 24 front,
+// 136 sync, 160 back (1344 total); 600 visible, 3 front, 6 sync, 11 back
+// (620 total). 1344 x 620 x 59.997 Hz = 50 MHz pixel clock. Negative h/v sync.
+module dvi_sync_1024x600
+# (
+    parameter X_POS_W = 11,
+              Y_POS_W = 10,
+              HS_W    = 11,
+              VS_W    = 10
+)
+(
+    input  logic               clk_i,
+    input  logic               rst_i,
+    output logic               hsync_o,
+    output logic               vsync_o,
+    output logic [X_POS_W-1:0] pixel_x_o,
+    output logic [Y_POS_W-1:0] pixel_y_o,
+    output logic               visible_range_o
+);
+
+    localparam SCREEN_H_RES = 1024;
+    localparam SCREEN_V_RES = 600;
+
+    localparam HSYNC_PULSE   = 136;
+    localparam H_FRONT_PORCH = 24;
+    localparam H_BACK_PORCH  = 160;
+
+    localparam VSYNC_PULSE   = 6;
+    localparam V_FRONT_PORCH = 3;
+    localparam V_BACK_PORCH  = 11;
+
+    localparam HSYNC_START = SCREEN_H_RES + H_FRONT_PORCH;   // 1048
+    localparam HSYNC_END   = HSYNC_START + HSYNC_PULSE;      // 1184
+    localparam H_TOTAL     = HSYNC_END + H_BACK_PORCH;       // 1344
+
+    localparam VSYNC_START = SCREEN_V_RES + V_FRONT_PORCH;   // 603
+    localparam VSYNC_END   = VSYNC_START + VSYNC_PULSE;      // 609
+    localparam V_TOTAL     = VSYNC_END + V_BACK_PORCH;       // 620
+
+    logic            h_cnt_max;
+    logic [HS_W-1:0] h_cnt_next;
+    logic [HS_W-1:0] h_cnt;
+    logic [VS_W-1:0] v_cnt_next;
+    logic [VS_W-1:0] v_cnt;
+
+    always_comb begin
+        h_cnt_max  = h_cnt == (H_TOTAL - 1);
+        h_cnt_next = h_cnt_max ? '0 : h_cnt + 1'b1;
+        v_cnt_next = v_cnt;
+
+        if (h_cnt_max) begin
+            v_cnt_next = v_cnt + 1'b1;
+
+            if (v_cnt == (V_TOTAL - 1))
+                v_cnt_next = '0;
+        end
+    end
+
+    always_ff @(posedge clk_i) begin
+        if (rst_i) begin
+            h_cnt <= '0;
+            v_cnt <= '0;
+        end else begin
+            h_cnt <= h_cnt_next;
+            v_cnt <= v_cnt_next;
+        end
+    end
+
+    // Register outputs
+    always_ff @(posedge clk_i)
+        if (rst_i) begin
+            hsync_o         <= '0;
+            vsync_o         <= '0;
+            pixel_x_o       <= '0;
+            pixel_y_o       <= '0;
+            visible_range_o <= '0;
+        end else begin
+            hsync_o         <= !(h_cnt_next >= HSYNC_START && h_cnt_next < HSYNC_END);
+            vsync_o         <= !(v_cnt_next >= VSYNC_START && v_cnt_next < VSYNC_END);
+
+            pixel_x_o       <=  (h_cnt_next > SCREEN_H_RES - 1) ? '0 : X_POS_W'(h_cnt_next);
+            pixel_y_o       <=  (v_cnt_next > SCREEN_V_RES - 1) ? '0 : Y_POS_W'(v_cnt_next);
+
+            visible_range_o <=  ((h_cnt_next < SCREEN_H_RES) && (v_cnt_next < SCREEN_V_RES));
+        end
+
 endmodule
 
 // Ten-bit DDR output, LSB first. Bits 8 and 9 enter the slave's D3/D4.
