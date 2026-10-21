@@ -115,20 +115,22 @@ module tb_check;
         check_pixel (640, 8'h00, 8'hC0, 8'hFF);   // c = 0.5: escape time 5
 
         // Zoom in (key[0], S1): from the panned view (-2.0) the point at
-        // x = 640 becomes c = 0.35, which escapes at iteration 8.
+        // x = 640 becomes c = 0.35, which escapes at iteration 8, and the
+        // iteration limit rises to 25.
         press_key (0);
         wait_row_300 ();
 
         check_pixel (640, 8'h00, 8'hFF, 8'h80);   // c = 0.35: escape time 8
+        check_units (8'b10110110);   // the limit rose to 25 -> units "5"
 
         // Zoom out (key[1], S2): the view returns exactly to the panned
-        // view, so x = 640 shows c = 0.5 again.
+        // view, so x = 640 shows c = 0.5 again, and the limit is back to 24.
         press_key (1);
         wait_row_300 ();
 
         check_pixel (640, 8'h00, 8'hC0, 8'hFF);   // c = 0.5: escape time 5
 
-        // The seven-segment display shows the iteration limit 24.
+        // The seven-segment display shows the iteration limit.
 
         check_units (8'b01100110);   // units of 24 = "4"
 

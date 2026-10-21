@@ -38,10 +38,10 @@
 //   key[6] (S7) - reset the view
 //   key[7] (S8) - reset the view (spare)
 //
-// The iteration limit is fixed at 20, as in the MATLAB reference where the
-// maxIter updates are commented out: zooming changes only the view, never
-// the rendering accuracy. The limit is shown on the TM1638 module's
-// seven-segment display (the two rightmost digits).
+// The iteration limit follows the zoom level: zooming in increments ZOOM_LVL
+// and zooming out decrements it, and the engine iterates
+// MAX_ITER = max (1, min (31, ZOOM_LVL)) times per point. The limit is shown
+// on the TM1638 module's seven-segment display (the two rightmost digits).
 
 module lab_top
 # (
@@ -143,12 +143,13 @@ module lab_top
     localparam logic signed [27:0] INIT_STEP = 28'sh4000000 / N_BX;     // 4.0 / N_BX
     localparam logic signed [27:0] INIT_TOP  = (64'sd33554432 * N_BY) / N_BX;  // 2.0 * N_BY / N_BX
 
-    // The iteration limit is fixed: zooming changes only the view, not the
-    // rendering accuracy. The framebuffer removes the real-time budget of
-    // the old line-buffer design, so the value only makes the image refresh
-    // proportionally slower.
+    // The iteration limit follows the zoom level: every zoom-in press
+    // increments the zoom level and every zoom-out press decrements it, and
+    // the limit is MAX_ITER = max (1, min (31, ZOOM_LVL)). The framebuffer
+    // removes the real-time budget of the old line-buffer design, so a
+    // higher limit only makes the image refresh proportionally slower.
 
-    localparam logic [5:0] MAX_ITER = 6'd24;
+    localparam logic [5:0] INIT_ITER = 6'd24;   // the initial zoom level
 
     // Zoom factors, as in the MATLAB reference: 0.7 and 1 / 0.7.
 
@@ -248,26 +249,48 @@ module lab_top
     wire signed [27:0] step_zoom_out = mul_q (step, K_ZOOM_OUT);
 
     logic signed [27:0] view_left_next, view_top_next, step_next;
+    logic        [ 5:0] zoom_lvl, zoom_lvl_next;
 
-    // The zoom update is split into two stages to meet the 62.5 MHz lab
-    // period. On the press, the next step size is computed (the DSP
-    // multiply). One cycle later the view corners follow, using the
-    // registered old and new step sizes. The pans and the reset only involve
-    // registered values and apply on the press itself.
+    // The zoom update is split into two stages to meet the 50 MHz period.
+    // On the press, the next step size is computed (the DSP multiply) and
+    // the zoom level is updated. One cycle later the view corners follow,
+    // using the registered old and new step sizes. The pans and the reset
+    // only involve registered values and apply on the press itself.
 
     always_comb
     begin
-        step_next = step;
+        step_next     = step;
+        zoom_lvl_next = zoom_lvl;
 
         if (key_press [0])       // S1 - zoom in
+        begin
             step_next = step_zoom_in;
+
+            if (zoom_lvl < 6'd31)
+                zoom_lvl_next = zoom_lvl + 6'd1;
+        end
         else if (key_press [1])  // S2 - zoom out
+        begin
             step_next = step_zoom_out;
+
+            if (zoom_lvl > 6'd1)
+                zoom_lvl_next = zoom_lvl - 6'd1;
+        end
         else if (key_press [6] || key_press [7])  // S7, S8 - reset the view
-            step_next = INIT_STEP;
+        begin
+            step_next     = INIT_STEP;
+            zoom_lvl_next = INIT_ITER [5:0];
+        end
 
         step_next = clamp_q (step_next, STEP_MIN, STEP_MAX);
     end
+
+    // The iteration limit follows the zoom level, saturated to 1..31:
+    // MAX_ITER = max (1, min (31, ZOOM_LVL)).
+
+    wire [5:0] max_iter = (zoom_lvl < 6'd1) ? 6'd1
+                        : (zoom_lvl > 6'd31) ? 6'd31
+                        : zoom_lvl;
 
     // The step size captured on a press and the press pulse delayed by one
     // cycle: the zoom corner update uses them instead of the combinational
@@ -343,12 +366,14 @@ module lab_top
             view_left <= INIT_LEFT;
             view_top  <= INIT_TOP;
             step      <= INIT_STEP;
+            zoom_lvl  <= INIT_ITER [5:0];
         end
         else
         begin
             view_left <= view_left_next;
             view_top  <= view_top_next;
             step      <= step_next;
+            zoom_lvl  <= zoom_lvl_next;
         end
     end
 
@@ -369,7 +394,7 @@ module lab_top
     (
         .clk      ( clk          ),
         .rst      ( rst          ),
-        .number   ( { 4' (MAX_ITER / 6'd10), 4' (MAX_ITER % 6'd10) } ),
+        .number   ( { 4' (max_iter / 6'd10), 4' (max_iter % 6'd10) } ),
         .dots     ( 2'b00        ),
         .abcdefgh ( seg_abcdefgh ),
         .digit    ( seg_digit    )
@@ -529,11 +554,14 @@ module lab_top
             begin
                 if (scan_restart)
                     state <= S_IDLE;
-                else if (iter == MAX_ITER)
+                else if (iter == max_iter)
                 begin
-                    // The point never escaped: it belongs to the set.
+                    // The point never escaped: it belongs to the set. The
+                    // sentinel for the interior is 0, a fixed value that
+                    // stays valid while the iteration limit changes with
+                    // the zoom level.
 
-                    color <= MAX_ITER [4:0];
+                    color <= '0;
                     state <= S_STORE;
                 end
                 else if (escaped)
@@ -637,9 +665,10 @@ module lab_top
         endcase
     endfunction
 
-    // The interior of the set is black; the escape time selects the color.
+    // The interior of the set (the sentinel 0) is black; the escape time
+    // selects the color.
 
-    wire [23:0] rgb = (color_idx == MAX_ITER [4:0]) ? 24'h000000 : palette (color_idx);
+    wire [23:0] rgb = (color_idx == 5'd0) ? 24'h000000 : palette (color_idx);
 
     assign red   = rgb [23 -: w_red];
     assign green = rgb [15 -: w_green];
