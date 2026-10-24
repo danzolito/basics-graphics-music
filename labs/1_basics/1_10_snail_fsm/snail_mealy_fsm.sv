@@ -45,3 +45,4 @@ module snail_mealy_fsm
     assign y = (a & state == S1);
 
 endmodule
+
