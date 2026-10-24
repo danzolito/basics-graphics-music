@@ -78,34 +78,63 @@ module lab_top
     wire [10:0] x11 = 11' (x);
     wire [ 9:0] y10 = 10' (y);
 
+    // always_comb
+    // begin
+    //     red   = '0;
+    //     green = '0;
+    //     blue  = '0;
+
+    //     if (   x >= screen_width  / 2
+    //          & x <  screen_width  * 2 / 3
+    //          & y >= screen_height / 2
+    //          & y <  screen_height * 2 / 3 )
+    //     begin
+    //         if (key [0])
+    //             green = '1;
+    //         else
+    //             green = x11 [$left (x11) - 1 -: w_green];
+    //     end
+
+    //     `ifdef YOSYS
+    //     if (x * x  + 2 * y * y  < screen_width * screen_width / 4)  // Ellipse
+    //     `else
+    //     if (x ** 2 + 2 * y ** 2 < (screen_width / 2) ** 2)  // Ellipse
+    //     `endif
+    //     begin
+    //         red = x11 [$left (x11) - 1 -: w_red];
+    //     end
+
+    //     if (x_2 [w_x +: w_y] < y)  // Parabola
+    //         blue = key [1] ? '1 : y10 [$left (y10) -: w_blue];
+    // end
+
     always_comb
     begin
         red   = '0;
         green = '0;
         blue  = '0;
 
-        if (   x >= screen_width  / 2
-             & x <  screen_width  * 2 / 3
-             & y >= screen_height / 2
-             & y <  screen_height * 2 / 3 )
+        if ((x - screen_width  / 2 - screen_width / 6) ** 2 +
+            (y - screen_height / 2 + screen_height / 4) ** 2 <
+            (screen_width / 4) ** 2)
         begin
-            if (key [0])
-                green = '1;
-            else
-                green = x11 [$left (x11) - 1 -: w_green];
+            red = key[0] ? '0 : '1;
         end
 
-        `ifdef YOSYS
-        if (x * x  + 2 * y * y  < screen_width * screen_width / 4)  // Ellipse
-        `else
-        if (x ** 2 + 2 * y ** 2 < (screen_width / 2) ** 2)  // Ellipse
-        `endif
+        if ((x - screen_width  / 2 + screen_width / 6) ** 2 +
+            (y - screen_height / 2 + screen_height / 4) ** 2 <
+            (screen_width / 4) ** 2)
         begin
-            red = x11 [$left (x11) - 1 -: w_red];
+            green = key[1] ? '0 : '1;
         end
 
-        if (x_2 [w_x +: w_y] < y)  // Parabola
-            blue = key [1] ? '1 : y10 [$left (y10) -: w_blue];
+        if ((x - screen_width / 2) ** 2 +
+            (y - screen_height / 2 - screen_height / 4) ** 2 <
+            (screen_width / 4) ** 2)
+        begin
+            blue = key[2] ? '0 : '1;
+        end
     end
+
 
 endmodule
