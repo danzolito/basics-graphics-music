@@ -79,6 +79,7 @@ module lab_top
             cnt <= cnt + 1'd1;
 
     wire enable = (cnt [22:0] == '0);
+    // wire enable = (cnt [1:0] == '0);
 
     //------------------------------------------------------------------------
 
@@ -110,29 +111,47 @@ module lab_top
         P     = 8'b1100_1110,
         G     = 8'b1011_1100,
         A     = 8'b1110_1110,
+        S     = 8'b101_10110,
+        D     = 8'b011_11010,
+        L     = 8'b0001_1100,
+        O     = 8'b1111_1100,
+        V     = 8'b0111_0100,
+        E     = 8'b1001_1110,
         space = 8'b0000_0000
     }
     seven_seg_encoding_e;
 
     seven_seg_encoding_e letter;
 
-    always_comb
-      case (4' (shift_reg))
-      4'b1000: letter = F;
-      4'b0100: letter = P;
-      4'b0010: letter = G;
-      4'b0001: letter = A;
-      default: letter = space;
-      endcase
+    // always_comb
+    //   case (4' (shift_reg))
+    //   4'b1000: letter = F;
+    //   4'b0100: letter = P;
+    //   4'b0010: letter = G;
+    //   4'b0001: letter = A;
+    //   default: letter = space;
+    //   endcase
 
-    assign abcdefgh = letter;
-    assign digit    = shift_reg;
+    // assign abcdefgh = letter;
+    // assign digit    = shift_reg;
 
     // Exercise 1: Increase the frequency of enable signal
     // to the level your eyes see the letters as a solid word
     // without any blinking. What is the threshold of such frequency?
 
     // Exercise 2: Put your name or another word to the display.
+
+    always_comb
+      case (4' (shift_reg))
+      4'b1000: letter = L;
+      4'b0100: letter = O;
+      4'b0010: letter = V;
+      4'b0001: letter = E;
+      default: letter = space;
+      endcase
+
+    assign abcdefgh = letter;
+    assign digit    = shift_reg;
 
     // Exercise 3: Comment out the "default" clause from the "case" statement
     // in the "always" block,and re-synthesize the example.

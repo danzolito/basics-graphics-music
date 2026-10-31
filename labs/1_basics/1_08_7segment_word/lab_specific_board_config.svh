@@ -9,7 +9,14 @@
 // `define CONCAT_REGULAR_SIGNALS_AND_TM1638
 // `define CONCAT_TM1638_SIGNALS_AND_REGULAR
 
-   `define EMULATE_DYNAMIC_7SEG_ON_STATIC_WITHOUT_STICKY_FLOPS
+// `define EMULATE_DYNAMIC_7SEG_ON_STATIC_WITHOUT_STICKY_FLOPS
+//
+// Описанная выше динамическая эмуляция дисплея отключена специально: микросхема TM1638
+// Сканирует цифры из своей оперативной памяти дисплея, поэтому ПЛИС используется только
+// необходимо зафиксировать шаблон каждой цифры один раз (фиксатор регистрируется в
+// tm1638_registers). При включенной эмуляции каждая позиция сканирования
+// left был отключен, что противоречило обновлению записей контроллера и
+// создавало стробоскопический эффект.
 
    `define INSTANTIATE_GRAPHICS_INTERFACE_MODULE
    `define INSTANTIATE_MICROPHONE_INTERFACE_MODULE
